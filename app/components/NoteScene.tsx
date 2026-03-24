@@ -6,7 +6,7 @@ import * as THREE from "three";
 const DESCRIPTION =
   "A centered metallic light purple 3D music note tilted 15 degrees clockwise on a very dark purple background with subtle moving light purple accents.";
 const LIGHT_MOTION_MULTIPLIER = 1.5;
-const POINTER_TILT_LIMIT = THREE.MathUtils.degToRad(5);
+const IDLE_TILT_LIMIT = THREE.MathUtils.degToRad(5);
 const BASE_NOTE_TILT = -Math.PI / 12;
 const LOGO_MODE_SCALE = 0.28;
 const LOGO_TRANSITION_DURATION = 1.25;
@@ -143,7 +143,6 @@ export function NoteScene({
         }
       });
 
-      const pointer = { x: 0, y: 0 };
       let transitionProgress = isLogoModeRef.current ? 1 : 0;
       let transitionStartProgress = transitionProgress;
       let transitionEndProgress = transitionProgress;
@@ -189,37 +188,6 @@ export function NoteScene({
         return raycaster.intersectObjects(noteMeshes, false).length > 0;
       };
 
-      const handlePointerMove = (event: PointerEvent) => {
-        const rect = container.getBoundingClientRect();
-
-        if (!rect.width || !rect.height) {
-          return;
-        }
-
-        const x = THREE.MathUtils.clamp(
-          ((event.clientX - rect.left) / rect.width) * 2 - 1,
-          -1,
-          1
-        );
-        const y = THREE.MathUtils.clamp(
-          ((event.clientY - rect.top) / rect.height) * 2 - 1,
-          -1,
-          1
-        );
-
-        pointer.x = x;
-        pointer.y = y;
-
-        container.style.cursor =
-          isNoteClickable() && isPointerOverNote(event) ? "pointer" : "default";
-      };
-
-      const handlePointerLeave = () => {
-        pointer.x = 0;
-        pointer.y = 0;
-        container.style.cursor = "default";
-      };
-
       const handleClick = (event: PointerEvent) => {
         if (!isNoteClickable()) {
           return;
@@ -230,8 +198,6 @@ export function NoteScene({
         }
       };
 
-      container.addEventListener("pointermove", handlePointerMove);
-      container.addEventListener("pointerleave", handlePointerLeave);
       container.addEventListener("click", handleClick);
 
       const resize = () => {
@@ -302,14 +268,19 @@ export function NoteScene({
         }
 
         const easedLogoProgress = transitionProgress;
-        const pointerLength = Math.hypot(pointer.x, pointer.y);
-        const pointerScale = pointerLength > 1 ? 1 / pointerLength : 1;
-        const pointerInfluence = 1 - easedLogoProgress;
+        const idleInfluence = 1 - easedLogoProgress;
+        const idleRotationPhase = clock.elapsedTime * 0.9;
 
         note.rotation.x =
-          -pointer.y * pointerScale * POINTER_TILT_LIMIT * pointerInfluence;
+          Math.sin(idleRotationPhase * 0.92) *
+          IDLE_TILT_LIMIT *
+          0.42 *
+          idleInfluence;
         note.rotation.y =
-          pointer.x * pointerScale * POINTER_TILT_LIMIT * pointerInfluence +
+          Math.cos(idleRotationPhase * 1.08 + 0.6) *
+            IDLE_TILT_LIMIT *
+            0.7 *
+            idleInfluence +
           easedLogoProgress * FULL_ROTATION;
         note.rotation.z = THREE.MathUtils.lerp(
           BASE_NOTE_TILT,
@@ -379,8 +350,6 @@ export function NoteScene({
         container.dataset.sceneStatus = "disposed";
         renderer.setAnimationLoop(null);
         window.removeEventListener("resize", resize);
-        container.removeEventListener("pointermove", handlePointerMove);
-        container.removeEventListener("pointerleave", handlePointerLeave);
         container.removeEventListener("click", handleClick);
         container.style.cursor = "default";
 

@@ -1,11 +1,26 @@
 "use client";
 
 import { useState } from "react";
+import dynamic from "next/dynamic";
 import { PageBackground } from "@/app/components/PageBackground";
 import { NoteScene } from "@/app/components/NoteScene";
-import { PlaylistWorkspace } from "@/app/components/PlaylistWorkspace";
 import { PlayButtonOrb } from "@/app/components/PlayButtonOrb";
-import { WordmarkOverlay } from "@/app/components/WordmarkOverlay";
+
+const PlaylistWorkspace = dynamic(
+  () =>
+    import("@/app/components/PlaylistWorkspace").then(
+      (module) => module.PlaylistWorkspace
+    ),
+  { ssr: false }
+);
+
+const WordmarkOverlay = dynamic(
+  () =>
+    import("@/app/components/WordmarkOverlay").then(
+      (module) => module.WordmarkOverlay
+    ),
+  { ssr: false }
+);
 
 type ViewState = "home" | "toLogo" | "logo" | "toHome";
 
