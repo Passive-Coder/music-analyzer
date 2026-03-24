@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { PageBackground } from "@/app/components/PageBackground";
 import { NoteScene } from "@/app/components/NoteScene";
+import { PlaylistWorkspace } from "@/app/components/PlaylistWorkspace";
 import { PlayButtonOrb } from "@/app/components/PlayButtonOrb";
 import { WordmarkOverlay } from "@/app/components/WordmarkOverlay";
 
@@ -12,7 +13,8 @@ export default function Home() {
   const [viewState, setViewState] = useState<ViewState>("home");
   const isTargetLogo = viewState === "toLogo" || viewState === "logo";
   const isUiVisible = viewState === "home";
-  const isScenePromoted = viewState === "logo" || viewState === "toHome";
+  const isScenePromoted = false;
+  const isPlaylistWorkspaceVisible = viewState === "logo";
 
   return (
     <main className="page">
@@ -29,6 +31,7 @@ export default function Home() {
           setViewState(mode === "logo" ? "logo" : "home");
         }}
       />
+      <PlaylistWorkspace isVisible={isPlaylistWorkspaceVisible} />
       <WordmarkOverlay isVisible={isUiVisible} />
       <PlayButtonOrb
         isActivated={isTargetLogo}
