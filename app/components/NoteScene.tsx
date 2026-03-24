@@ -7,9 +7,45 @@ const DESCRIPTION =
   "A centered metallic light purple 3D music note tilted 15 degrees clockwise on a very dark purple background with subtle moving light purple accents.";
 const LIGHT_MOTION_MULTIPLIER = 1.5;
 const POINTER_TILT_LIMIT = THREE.MathUtils.degToRad(5);
+const BASE_NOTE_TILT = -Math.PI / 12;
+const LOGO_MODE_SCALE = 0.28;
+const LOGO_TRANSITION_DURATION = 1.25;
+const FULL_ROTATION = Math.PI * 2;
+const HOME_NOTE_COLOR = new THREE.Color(0xc5b1ef);
+const LOGO_NOTE_COLOR = new THREE.Color(0xd9c4ff);
+const HOME_NOTE_EMISSIVE = new THREE.Color(0x12081a);
+const LOGO_NOTE_EMISSIVE = new THREE.Color(0x62489a);
+const LOGO_CLICK_TARGET_SIZE = new THREE.Vector3(8.8, 9.6, 4.4);
 
-export function NoteScene() {
+type NoteSceneProps = {
+  isLogoMode?: boolean;
+  isPromoted?: boolean;
+  onNoteClick?: () => void;
+  onTransitionComplete?: (mode: "home" | "logo") => void;
+};
+
+export function NoteScene({
+  isLogoMode = false,
+  isPromoted = false,
+  onNoteClick,
+  onTransitionComplete,
+}: NoteSceneProps) {
   const containerRef = useRef<HTMLDivElement>(null);
+  const isLogoModeRef = useRef(isLogoMode);
+  const onNoteClickRef = useRef(onNoteClick);
+  const onTransitionCompleteRef = useRef(onTransitionComplete);
+
+  useEffect(() => {
+    isLogoModeRef.current = isLogoMode;
+  }, [isLogoMode]);
+
+  useEffect(() => {
+    onNoteClickRef.current = onNoteClick;
+  }, [onNoteClick]);
+
+  useEffect(() => {
+    onTransitionCompleteRef.current = onTransitionComplete;
+  }, [onTransitionComplete]);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -74,10 +110,84 @@ export function NoteScene() {
       });
 
       const noteMaterial = createNoteMaterial();
+      const noteRig = new THREE.Group();
       const note = createNote(noteMaterial);
-      scene.add(note);
+      note.rotation.z = BASE_NOTE_TILT;
+      noteRig.add(note);
+
+      const noteClickTarget = new THREE.Mesh(
+        new THREE.BoxGeometry(
+          LOGO_CLICK_TARGET_SIZE.x,
+          LOGO_CLICK_TARGET_SIZE.y,
+          LOGO_CLICK_TARGET_SIZE.z
+        ),
+        new THREE.MeshBasicMaterial({
+          color: 0xffffff,
+          transparent: true,
+          opacity: 0,
+          depthWrite: false,
+        })
+      );
+      noteRig.add(noteClickTarget);
+      scene.add(noteRig);
+
+      const restPosition = new THREE.Vector3();
+      const logoTargetPosition = new THREE.Vector3();
+      const raycaster = new THREE.Raycaster();
+      const raycastPointer = new THREE.Vector2();
+      const noteMeshes: THREE.Object3D[] = [noteClickTarget];
+
+      note.traverse((child) => {
+        if (child instanceof THREE.Mesh) {
+          noteMeshes.push(child);
+        }
+      });
 
       const pointer = { x: 0, y: 0 };
+      let transitionProgress = isLogoModeRef.current ? 1 : 0;
+      let transitionStartProgress = transitionProgress;
+      let transitionEndProgress = transitionProgress;
+      let transitionElapsed = 0;
+      let isTransitioning = false;
+      let activeTarget = transitionEndProgress;
+      let pendingCompletionTarget: number | null = null;
+
+      const beginTransition = (target: number) => {
+        activeTarget = target;
+        transitionStartProgress = transitionProgress;
+        transitionEndProgress = target;
+        transitionElapsed = 0;
+        isTransitioning = true;
+        pendingCompletionTarget = target;
+      };
+
+      const isNoteClickable = () =>
+        activeTarget === 1 && !isTransitioning && transitionProgress >= 0.999;
+
+      const syncRaycastPointer = (event: PointerEvent) => {
+        const rect = container.getBoundingClientRect();
+
+        if (!rect.width || !rect.height) {
+          return false;
+        }
+
+        raycastPointer.set(
+          ((event.clientX - rect.left) / rect.width) * 2 - 1,
+          -((event.clientY - rect.top) / rect.height) * 2 + 1
+        );
+
+        return true;
+      };
+
+      const isPointerOverNote = (event: PointerEvent) => {
+        if (!syncRaycastPointer(event)) {
+          return false;
+        }
+
+        raycaster.setFromCamera(raycastPointer, camera);
+
+        return raycaster.intersectObjects(noteMeshes, false).length > 0;
+      };
 
       const handlePointerMove = (event: PointerEvent) => {
         const rect = container.getBoundingClientRect();
@@ -99,22 +209,48 @@ export function NoteScene() {
 
         pointer.x = x;
         pointer.y = y;
+
+        container.style.cursor =
+          isNoteClickable() && isPointerOverNote(event) ? "pointer" : "default";
       };
 
       const handlePointerLeave = () => {
         pointer.x = 0;
         pointer.y = 0;
+        container.style.cursor = "default";
+      };
+
+      const handleClick = (event: PointerEvent) => {
+        if (!isNoteClickable()) {
+          return;
+        }
+
+        if (isPointerOverNote(event)) {
+          onNoteClickRef.current?.();
+        }
       };
 
       container.addEventListener("pointermove", handlePointerMove);
       container.addEventListener("pointerleave", handlePointerLeave);
+      container.addEventListener("click", handleClick);
 
       const resize = () => {
         const width = container.clientWidth || window.innerWidth;
         const height = container.clientHeight || window.innerHeight;
         camera.aspect = width / height;
         camera.updateProjectionMatrix();
+        camera.updateMatrixWorld();
         renderer.setSize(width, height, false);
+        logoTargetPosition.copy(
+          screenToWorldOnPlane(
+            camera,
+            width - Math.min(width * 0.08, 96),
+            Math.max(height * 0.11, 72),
+            width,
+            height,
+            0
+          )
+        );
       };
 
       resize();
@@ -126,11 +262,101 @@ export function NoteScene() {
 
       renderer.setAnimationLoop(() => {
         const delta = Math.min(clock.getDelta(), 0.033);
+        const logoTarget = isLogoModeRef.current ? 1 : 0;
+
+        if (logoTarget !== activeTarget) {
+          beginTransition(logoTarget);
+        }
+
+        if (isTransitioning) {
+          transitionElapsed = Math.min(
+            transitionElapsed + delta,
+            LOGO_TRANSITION_DURATION
+          );
+
+          const animationProgress = THREE.MathUtils.smootherstep(
+            transitionElapsed / LOGO_TRANSITION_DURATION,
+            0,
+            1
+          );
+
+          transitionProgress = THREE.MathUtils.lerp(
+            transitionStartProgress,
+            transitionEndProgress,
+            animationProgress
+          );
+
+          if (transitionElapsed >= LOGO_TRANSITION_DURATION) {
+            transitionProgress = transitionEndProgress;
+            isTransitioning = false;
+
+            if (pendingCompletionTarget !== null) {
+              onTransitionCompleteRef.current?.(
+                pendingCompletionTarget === 1 ? "logo" : "home"
+              );
+              pendingCompletionTarget = null;
+            }
+          }
+        } else {
+          transitionProgress = activeTarget;
+        }
+
+        const easedLogoProgress = transitionProgress;
         const pointerLength = Math.hypot(pointer.x, pointer.y);
         const pointerScale = pointerLength > 1 ? 1 / pointerLength : 1;
+        const pointerInfluence = 1 - easedLogoProgress;
 
-        note.rotation.x = -pointer.y * pointerScale * POINTER_TILT_LIMIT;
-        note.rotation.y = pointer.x * pointerScale * POINTER_TILT_LIMIT;
+        note.rotation.x =
+          -pointer.y * pointerScale * POINTER_TILT_LIMIT * pointerInfluence;
+        note.rotation.y =
+          pointer.x * pointerScale * POINTER_TILT_LIMIT * pointerInfluence +
+          easedLogoProgress * FULL_ROTATION;
+        note.rotation.z = THREE.MathUtils.lerp(
+          BASE_NOTE_TILT,
+          0,
+          easedLogoProgress
+        );
+        noteMaterial.color.lerpColors(
+          HOME_NOTE_COLOR,
+          LOGO_NOTE_COLOR,
+          easedLogoProgress
+        );
+        noteMaterial.emissive.lerpColors(
+          HOME_NOTE_EMISSIVE,
+          LOGO_NOTE_EMISSIVE,
+          easedLogoProgress
+        );
+        noteMaterial.metalness = THREE.MathUtils.lerp(1, 0.08, easedLogoProgress);
+        noteMaterial.roughness = THREE.MathUtils.lerp(
+          0.12,
+          0.58,
+          easedLogoProgress
+        );
+        noteMaterial.envMapIntensity = THREE.MathUtils.lerp(
+          2.6,
+          0.18,
+          easedLogoProgress
+        );
+        noteMaterial.clearcoat = THREE.MathUtils.lerp(0.38, 0.04, easedLogoProgress);
+        noteMaterial.clearcoatRoughness = THREE.MathUtils.lerp(
+          0.06,
+          0.28,
+          easedLogoProgress
+        );
+        noteMaterial.emissiveIntensity = THREE.MathUtils.lerp(
+          0.02,
+          0.34,
+          easedLogoProgress
+        );
+
+        noteRig.position.lerpVectors(
+          restPosition,
+          logoTargetPosition,
+          easedLogoProgress
+        );
+        noteRig.scale.setScalar(
+          THREE.MathUtils.lerp(1, LOGO_MODE_SCALE, easedLogoProgress)
+        );
 
         updateGlowBodies(glowBodies, delta * LIGHT_MOTION_MULTIPLIER);
         keyLight.target.position.x =
@@ -155,6 +381,8 @@ export function NoteScene() {
         window.removeEventListener("resize", resize);
         container.removeEventListener("pointermove", handlePointerMove);
         container.removeEventListener("pointerleave", handlePointerLeave);
+        container.removeEventListener("click", handleClick);
+        container.style.cursor = "default";
 
         glowBodies.forEach((body) => {
           scene.remove(body.sprite);
@@ -169,8 +397,10 @@ export function NoteScene() {
             child.geometry.dispose();
           }
         });
+        noteClickTarget.geometry.dispose();
+        disposeMaterial(noteClickTarget.material);
 
-        scene.remove(note);
+        scene.remove(noteRig);
         scene.remove(hemiLight);
         scene.remove(keyLight);
         scene.remove(keyLight.target);
@@ -199,7 +429,9 @@ export function NoteScene() {
   }, []);
 
   return (
-    <section className="scene-shell">
+    <section
+      className={`scene-shell${isPromoted ? " scene-shell-logo" : ""}`}
+    >
       <h1 className="sr-only">3D Metallic Musical Note</h1>
       <div ref={containerRef} className="scene-viewport" />
     </section>
@@ -208,7 +440,9 @@ export function NoteScene() {
 
 function createNoteMaterial() {
   return new THREE.MeshPhysicalMaterial({
-    color: 0xc5b1ef,
+    color: HOME_NOTE_COLOR.clone(),
+    emissive: HOME_NOTE_EMISSIVE.clone(),
+    emissiveIntensity: 0.02,
     metalness: 1,
     roughness: 0.12,
     envMapIntensity: 2.6,
@@ -290,9 +524,31 @@ function createNote(material: THREE.MeshPhysicalMaterial) {
   const center = bounds.getCenter(new THREE.Vector3());
   noteGroup.position.sub(center);
   noteGroup.scale.setScalar(0.8);
-  noteGroup.rotation.z = -Math.PI / 12;
 
   return noteGroup;
+}
+
+function screenToWorldOnPlane(
+  camera: THREE.PerspectiveCamera,
+  screenX: number,
+  screenY: number,
+  viewportWidth: number,
+  viewportHeight: number,
+  planeZ: number
+) {
+  const pointer = new THREE.Vector3(
+    (screenX / viewportWidth) * 2 - 1,
+    -(screenY / viewportHeight) * 2 + 1,
+    0.5
+  );
+  camera.updateProjectionMatrix();
+  camera.updateMatrixWorld();
+  pointer.unproject(camera);
+
+  const direction = pointer.sub(camera.position).normalize();
+  const distance = (planeZ - camera.position.z) / direction.z;
+
+  return camera.position.clone().add(direction.multiplyScalar(distance));
 }
 
 function createEnvironmentRig(renderer: THREE.WebGLRenderer) {

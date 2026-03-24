@@ -1,13 +1,45 @@
+"use client";
+
+import { useState } from "react";
 import { PageBackground } from "@/app/components/PageBackground";
 import { NoteScene } from "@/app/components/NoteScene";
+import { PlayButtonOrb } from "@/app/components/PlayButtonOrb";
 import { WordmarkOverlay } from "@/app/components/WordmarkOverlay";
 
+type ViewState = "home" | "toLogo" | "logo" | "toHome";
+
 export default function Home() {
+  const [viewState, setViewState] = useState<ViewState>("home");
+  const isTargetLogo = viewState === "toLogo" || viewState === "logo";
+  const isUiVisible = viewState === "home";
+  const isScenePromoted = viewState === "logo" || viewState === "toHome";
+
   return (
     <main className="page">
       <PageBackground />
-      <NoteScene />
-      <WordmarkOverlay />
+      <NoteScene
+        isLogoMode={isTargetLogo}
+        isPromoted={isScenePromoted}
+        onNoteClick={() => {
+          if (viewState === "logo") {
+            setViewState("toHome");
+          }
+        }}
+        onTransitionComplete={(mode) => {
+          setViewState(mode === "logo" ? "logo" : "home");
+        }}
+      />
+      <WordmarkOverlay isVisible={isUiVisible} />
+      <PlayButtonOrb
+        isActivated={isTargetLogo}
+        isVisible={isUiVisible}
+        isDisabled={viewState !== "home"}
+        onClick={() => {
+          if (viewState === "home") {
+            setViewState("toLogo");
+          }
+        }}
+      />
     </main>
   );
 }
