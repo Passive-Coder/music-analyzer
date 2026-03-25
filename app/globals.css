@@ -921,6 +921,87 @@ body {
   transform: scale(1.3);
 }
 
+/* Lyrics Overlay Base */
+.lyrics-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 50; 
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.lyrics-overlay__container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  width: 80%;
+  max-width: 1000px;
+  text-align: center;
+}
+
+.lyrics-line {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%) scale(0.95);
+  font-size: 3.5rem;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  line-height: 1.2;
+  width: 100%;
+  transition: opacity 0.4s ease, transform 0.4s ease;
+  will-change: transform, opacity;
+  opacity: 0;
+}
+
+.lyrics-line--waiting {
+  opacity: 0;
+  transform: translate(-50%, -10px) scale(0.98);
+}
+
+.lyrics-line--active {
+  opacity: 1;
+  transform: translate(-50%, -50%) scale(1);
+}
+
+/* Karaoke Word Effect */
+.lyric-word {
+  margin-right: 0.15em;
+  display: inline-block;
+  color: transparent;
+  background-clip: text;
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  
+  background-image: linear-gradient(
+    90deg, 
+    #00f3ff 0%,         
+    #ff00ff 25%,        
+    rgba(255, 255, 255, 0.4) 50%, 
+    rgba(255, 255, 255, 0.4) 100%
+  );
+  
+  background-size: 200% 100%;
+  background-position: 100% 0;
+  
+  transition: opacity 0.2s ease;
+}
+
+.lyric-word.active {
+  background-position: 0 0;
+  transition: background-position var(--sweep-duration) linear;
+  filter: drop-shadow(0 0 16px rgba(0, 243, 255, 0.4));
+}
+
+.lyric-word.sung {
+  background-position: 0 0;
+  filter: drop-shadow(0 0 12px rgba(157, 0, 255, 0.5));
+}
+
 @media (max-width: 768px) {
   .bottom-player {
     padding: 0 20px;

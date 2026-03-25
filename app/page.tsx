@@ -1,25 +1,43 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { PageBackground } from "@/app/components/PageBackground";
 import { NoteScene } from "@/app/components/NoteScene";
 import { PlaylistWorkspace } from "@/app/components/PlaylistWorkspace";
 import { PlayButtonOrb } from "@/app/components/PlayButtonOrb";
 import { WordmarkOverlay } from "@/app/components/WordmarkOverlay";
 import { BottomPlayer } from "@/app/components/BottomPlayer";
+import { LyricsOverlay } from "@/app/components/LyricsOverlay";
 import type { PlaylistSong } from "@/lib/playlist-types";
+import { fetchLyrics, TrackLyrics } from "@/lib/lyrics";
 
 type ViewState = "home" | "toLogo" | "logo" | "toHome";
 
 export default function Home() {
   const [viewState, setViewState] = useState<ViewState>("home");
   const [playingSong, setPlayingSong] = useState<PlaylistSong | null>(null);
+  const [currentLyrics, setCurrentLyrics] = useState<TrackLyrics | null>(null);
 
   const isPlayingMode = playingSong !== null;
   const isTargetLogo = viewState === "toLogo" || viewState === "logo" || isPlayingMode;
   const isUiVisible = viewState === "home" && !isPlayingMode;
   const isScenePromoted = isPlayingMode;
   const isPlaylistWorkspaceVisible = viewState === "logo" && !isPlayingMode;
+
+  useEffect(() => {
+    if (playingSong) {
+      setCurrentLyrics(null);
+      fetchLyrics(
+        playingSong.title, 
+        playingSong.artists.join(", "), 
+        playingSong.durationMs / 1000
+      ).then(lyrics => {
+        if (lyrics) setCurrentLyrics(lyrics);
+      });
+    } else {
+      setCurrentLyrics(null);
+    }
+  }, [playingSong]);
 
   return (
     <main className="page">
@@ -39,6 +57,9 @@ export default function Home() {
           }
         }}
       />
+      {currentLyrics && isPlayingMode && (
+        <LyricsOverlay lyrics={currentLyrics} />
+      )}
       <PlaylistWorkspace
         isVisible={isPlaylistWorkspaceVisible}
         onPlaySong={(song) => setPlayingSong(song)}
