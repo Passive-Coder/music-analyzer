@@ -1,0 +1,29 @@
+{
+  "code": "407E8F99",
+  "createdAt": "2026-03-24T18:50:07.677Z",
+  "playlist": {
+    "description": "Your local audio testing playground.",
+    "id": "local-playlist",
+    "imageUrl": null,
+    "owner": "You",
+    "songs": [
+      {
+        "album": "Local Upload",
+        "artists": [
+          "Local Audio"
+        ],
+        "artworkUrl": null,
+        "durationMs": 0,
+        "id": "local-1774378087987",
+        "previewUrl": "blob:http://localhost:3101/824cfbdc-05f0-44ee-903e-a03344f7398c",
+        "spotifyId": null,
+        "spotifyUrl": null,
+        "title": "01 - I'm A Freak (feat. Pitbull) - Webmusic.IN.mp3",
+        "uri": null
+      }
+    ],
+    "spotifyUrl": "",
+    "title": "Local Tracks"
+  },
+  "sourceUrl": ""
+}

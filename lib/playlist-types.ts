@@ -4,6 +4,7 @@ export type PlaylistSong = {
   artworkUrl: string | null;
   durationMs: number;
   id: string;
+  previewUrl: string | null;
   spotifyId: string | null;
   spotifyUrl: string | null;
   title: string;

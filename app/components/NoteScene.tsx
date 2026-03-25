@@ -2,6 +2,7 @@
 
 import { useEffect, useRef } from "react";
 import * as THREE from "three";
+import { audioManager } from "@/lib/audioManager";
 
 const DESCRIPTION =
   "A centered metallic light purple 3D music note tilted 15 degrees clockwise on a very dark purple background with subtle moving light purple accents.";
@@ -16,9 +17,25 @@ const LOGO_NOTE_COLOR = new THREE.Color(0xd9c4ff);
 const HOME_NOTE_EMISSIVE = new THREE.Color(0x12081a);
 const LOGO_NOTE_EMISSIVE = new THREE.Color(0x62489a);
 const LOGO_CLICK_TARGET_SIZE = new THREE.Vector3(8.8, 9.6, 4.4);
+const HOME_CAMERA_FOV = 36;
+const PLAYING_CAMERA_FOV = 60;
+const PLAYING_CAMERA_Z = 15;
+const VISUALIZER_Y_OFFSET = 2.2;
+const PLAYING_VISUALIZER_SCALE = 0.84;
+const VISUALIZER_BG_COLOR = new THREE.Color(0x030303);
+const VISUALIZER_COLOR_A = new THREE.Color(0x00f3ff);
+const VISUALIZER_COLOR_B = new THREE.Color(0xff00ff);
+const VISUALIZER_PARTICLE_BASE = new THREE.Color(0x9d00ff);
+const VISUALIZER_PARTICLE_PEAK = new THREE.Color(0xffffff);
+const VISUALIZER_PARTICLE_COUNT = 4000;
+const SPHERE_BASE_COLOR = new THREE.Color(0x7a2cff);
+const SPHERE_MID_COLOR = new THREE.Color(0xb155ff);
+const SPHERE_PEAK_COLOR = new THREE.Color(0xf0c6ff);
+const SPHERE_LIGHT_COLOR = new THREE.Color(0xcf74ff);
 
 type NoteSceneProps = {
   isLogoMode?: boolean;
+  isPlayingMode?: boolean;
   isPromoted?: boolean;
   onNoteClick?: () => void;
   onTransitionComplete?: (mode: "home" | "logo") => void;
@@ -26,18 +43,24 @@ type NoteSceneProps = {
 
 export function NoteScene({
   isLogoMode = false,
+  isPlayingMode = false,
   isPromoted = false,
   onNoteClick,
   onTransitionComplete,
 }: NoteSceneProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const isLogoModeRef = useRef(isLogoMode);
+  const isPlayingModeRef = useRef(isPlayingMode);
   const onNoteClickRef = useRef(onNoteClick);
   const onTransitionCompleteRef = useRef(onTransitionComplete);
 
   useEffect(() => {
     isLogoModeRef.current = isLogoMode;
   }, [isLogoMode]);
+
+  useEffect(() => {
+    isPlayingModeRef.current = isPlayingMode;
+  }, [isPlayingMode]);
 
   useEffect(() => {
     onNoteClickRef.current = onNoteClick;
@@ -69,7 +92,7 @@ export function NoteScene({
       container.appendChild(renderer.domElement);
 
       const scene = new THREE.Scene();
-      const camera = new THREE.PerspectiveCamera(36, 1, 0.1, 100);
+      const camera = new THREE.PerspectiveCamera(HOME_CAMERA_FOV, 1, 0.1, 100);
       camera.position.set(0, 0, 15.5);
 
       const glowTexture = createGlowTexture();
@@ -109,6 +132,21 @@ export function NoteScene({
         environmentRig.scene.add(body.envOrb);
       });
 
+      const visualizerRig = new THREE.Group();
+      visualizerRig.position.set(0, 0, 0);
+      scene.add(visualizerRig);
+
+      const visualizerAmbientLight = new THREE.AmbientLight(0x00f3ff, 0.5);
+      visualizerRig.add(visualizerAmbientLight);
+
+      const visualizerDirectionalLight = new THREE.DirectionalLight(0xffffff, 1);
+      visualizerDirectionalLight.position.set(10, 10, 5);
+      visualizerRig.add(visualizerDirectionalLight);
+
+      const visualizerPointLight = new THREE.PointLight(0x9d00ff, 2, 0, 2);
+      visualizerPointLight.position.set(-10, -10, -10);
+      visualizerRig.add(visualizerPointLight);
+
       const noteMaterial = createNoteMaterial();
       const noteRig = new THREE.Group();
       const note = createNote(noteMaterial);
@@ -130,6 +168,90 @@ export function NoteScene({
       );
       noteRig.add(noteClickTarget);
       scene.add(noteRig);
+
+      const sphereRig = new THREE.Group();
+      sphereRig.scale.setScalar(0);
+      visualizerRig.add(sphereRig);
+
+      const sphereGeometry = new THREE.IcosahedronGeometry(2.5, 3);
+      const sphereMaterial = new THREE.MeshStandardMaterial({
+        color: SPHERE_BASE_COLOR.clone(),
+        emissive: SPHERE_LIGHT_COLOR.clone(),
+        emissiveIntensity: 0.5,
+        roughness: 0.18,
+        metalness: 0.08,
+        wireframe: true,
+        transparent: true,
+        opacity: 0.82,
+        depthWrite: false,
+      });
+
+      const sphereMesh = new THREE.Mesh(sphereGeometry, sphereMaterial);
+      sphereRig.add(sphereMesh);
+
+      const sphereGlowGeometry = new THREE.IcosahedronGeometry(2.9, 2);
+      const sphereGlowMaterial = new THREE.MeshBasicMaterial({
+        color: SPHERE_LIGHT_COLOR.clone(),
+        transparent: true,
+        opacity: 0.2,
+        blending: THREE.AdditiveBlending,
+        side: THREE.BackSide,
+        depthWrite: false,
+      });
+      const sphereGlowMesh = new THREE.Mesh(sphereGlowGeometry, sphereGlowMaterial);
+      sphereRig.add(sphereGlowMesh);
+
+      const sphereAura = createGlow(
+        glowTexture,
+        SPHERE_LIGHT_COLOR.clone(),
+        0.34,
+        [0, 0, -1.6],
+        18
+      );
+      sphereRig.add(sphereAura);
+      const sphereAuraMaterial = sphereAura.material as THREE.SpriteMaterial;
+
+      const sphereLight = new THREE.PointLight(SPHERE_LIGHT_COLOR.clone(), 5.4, 24, 2);
+      sphereLight.position.set(0, 0, 1.8);
+      sphereRig.add(sphereLight);
+
+      const particlePositions = new Float32Array(VISUALIZER_PARTICLE_COUNT * 3);
+      const initialParticlePositions = new Float32Array(VISUALIZER_PARTICLE_COUNT * 3);
+
+      for (let index = 0; index < VISUALIZER_PARTICLE_COUNT; index += 1) {
+        const radius = 5 + Math.random() * 25;
+        const theta = Math.random() * FULL_ROTATION;
+        const phi = Math.acos(Math.random() * 2 - 1);
+        const x = radius * Math.sin(phi) * Math.cos(theta);
+        const y = radius * Math.sin(phi) * Math.sin(theta);
+        const z = radius * Math.cos(phi);
+        const offset = index * 3;
+
+        particlePositions[offset] = x;
+        particlePositions[offset + 1] = y;
+        particlePositions[offset + 2] = z;
+        initialParticlePositions[offset] = x;
+        initialParticlePositions[offset + 1] = y;
+        initialParticlePositions[offset + 2] = z;
+      }
+
+      const particleGeometry = new THREE.BufferGeometry();
+      particleGeometry.setAttribute(
+        "position",
+        new THREE.BufferAttribute(particlePositions, 3)
+      );
+
+      const particleMaterial = new THREE.PointsMaterial({
+        size: 0.05,
+        color: VISUALIZER_PARTICLE_BASE.clone(),
+        transparent: true,
+        opacity: 0.8,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+      });
+
+      const particlePoints = new THREE.Points(particleGeometry, particleMaterial);
+      visualizerRig.add(particlePoints);
 
       const restPosition = new THREE.Vector3();
       const logoTargetPosition = new THREE.Vector3();
@@ -259,10 +381,91 @@ export function NoteScene({
 
       const clock = new THREE.Clock();
       let environmentFrame = 0;
+      let playingProgress = isPlayingModeRef.current ? 1 : 0;
+      let sphereEntranceScale = isPlayingModeRef.current ? 1 : 0;
+      let spherePulseScale = 1;
+      let averageEnergy = 0;
+      let beatPulse = 0;
+      let beatInterval = 0.52;
+      let lastBeatAt = -10;
+      let tempoPhase = 0;
+      const particleColor = VISUALIZER_PARTICLE_BASE.clone();
+      const ambientColor = VISUALIZER_COLOR_A.clone();
+      const sphereColor = SPHERE_BASE_COLOR.clone();
+      const sphereGlowColor = SPHERE_LIGHT_COLOR.clone();
+      const sphereLightColor = SPHERE_LIGHT_COLOR.clone();
 
       renderer.setAnimationLoop(() => {
         const delta = Math.min(clock.getDelta(), 0.033);
+        const freqs = audioManager?.getFrequencyData() ?? { low: 0, mid: 0, high: 0 };
+        const bass = freqs.low;
+        const mid = freqs.mid;
+        const treble = freqs.high;
         const logoTarget = isLogoModeRef.current ? 1 : 0;
+        playingProgress = THREE.MathUtils.lerp(
+          playingProgress,
+          isPlayingModeRef.current ? 1 : 0,
+          delta * 3.0
+        );
+        const noteScaleMaster = Math.max(0, 1 - playingProgress);
+        const sphereScaleMaster = Math.max(0, playingProgress);
+        const playingYOffset = VISUALIZER_Y_OFFSET * sphereScaleMaster;
+        const energy = bass * 0.58 + mid * 0.27 + treble * 0.15;
+        const smoothedAverageRate = energy > averageEnergy ? 8 : 2.4;
+        averageEnergy = THREE.MathUtils.lerp(
+          averageEnergy,
+          energy,
+          delta * smoothedAverageRate
+        );
+        const bassTransient = Math.max(0, bass - averageEnergy * 0.82);
+        const energyTransient = Math.max(0, energy - averageEnergy);
+        const onsetStrength = bassTransient * 1.35 + energyTransient * 0.9;
+        const now = clock.elapsedTime;
+
+        beatPulse = Math.max(0, beatPulse - delta * 2.6);
+
+        if (
+          sphereScaleMaster > 0.2 &&
+          bass > 0.16 &&
+          onsetStrength > 0.09 &&
+          now - lastBeatAt > 0.2
+        ) {
+          const nextInterval = now - lastBeatAt;
+
+          if (nextInterval > 0.24 && nextInterval < 1.1) {
+            beatInterval = THREE.MathUtils.lerp(beatInterval, nextInterval, 0.22);
+          }
+
+          lastBeatAt = now;
+          beatPulse = 0.82;
+        }
+
+        const tempoHz = THREE.MathUtils.clamp(1 / Math.max(beatInterval, 0.28), 0.9, 3.8);
+        tempoPhase = (tempoPhase + delta * tempoHz * FULL_ROTATION) % FULL_ROTATION;
+        const tempoPulse = Math.pow((Math.sin(tempoPhase) + 1) * 0.5, 1.4);
+        const intensity = THREE.MathUtils.clamp(
+          energy * 0.72 + bass * 0.26 + beatPulse * 0.28,
+          0,
+          1
+        );
+        const colorLift = THREE.MathUtils.clamp(
+          mid * 0.24 + treble * 0.14 + beatPulse * 0.22 + tempoPulse * 0.1,
+          0,
+          1
+        );
+
+        camera.fov = THREE.MathUtils.lerp(
+          camera.fov,
+          isPlayingModeRef.current ? PLAYING_CAMERA_FOV : HOME_CAMERA_FOV,
+          delta * 4
+        );
+        camera.position.z = THREE.MathUtils.lerp(
+          camera.position.z,
+          isPlayingModeRef.current ? PLAYING_CAMERA_Z : 15.5,
+          delta * 4
+        );
+        camera.updateProjectionMatrix();
+        renderer.setClearColor(VISUALIZER_BG_COLOR, sphereScaleMaster);
 
         if (logoTarget !== activeTarget) {
           beginTransition(logoTarget);
@@ -344,8 +547,8 @@ export function NoteScene({
           easedLogoProgress
         );
         noteMaterial.emissiveIntensity = THREE.MathUtils.lerp(
-          0.02,
-          0.34,
+          0.02 + bass * 1.5,
+          0.34 + bass * 0.8,
           easedLogoProgress
         );
 
@@ -355,10 +558,98 @@ export function NoteScene({
           easedLogoProgress
         );
         noteRig.scale.setScalar(
-          THREE.MathUtils.lerp(1, LOGO_MODE_SCALE, easedLogoProgress)
+          THREE.MathUtils.lerp(1, LOGO_MODE_SCALE, easedLogoProgress) * noteScaleMaster
         );
 
-        updateGlowBodies(glowBodies, delta * LIGHT_MOTION_MULTIPLIER);
+        visualizerRig.position.y = THREE.MathUtils.lerp(
+          visualizerRig.position.y,
+          playingYOffset,
+          delta * 6
+        );
+        visualizerRig.rotation.y += delta * sphereScaleMaster * (0.05 + mid * 0.2);
+        ambientColor.lerpColors(VISUALIZER_COLOR_A, VISUALIZER_COLOR_B, mid);
+        visualizerAmbientLight.color.copy(ambientColor);
+        visualizerAmbientLight.intensity = 0.5 + mid * 1.5;
+
+        sphereEntranceScale = THREE.MathUtils.lerp(
+          sphereEntranceScale,
+          sphereScaleMaster * PLAYING_VISUALIZER_SCALE,
+          delta * 8
+        );
+        sphereRig.scale.setScalar(sphereEntranceScale);
+        spherePulseScale = THREE.MathUtils.lerp(
+          spherePulseScale,
+          1 + bass * 0.78 + beatPulse * 0.22 + tempoPulse * 0.08,
+          delta * 14
+        );
+        sphereMesh.scale.setScalar(spherePulseScale);
+        sphereMesh.rotation.y += delta * (0.18 + tempoHz * 0.02) + bass * 0.05;
+        sphereMesh.rotation.x += delta * (0.08 + beatPulse * 0.04);
+        sphereGlowMesh.rotation.copy(sphereMesh.rotation);
+        sphereGlowMesh.scale.setScalar(spherePulseScale * (1.03 + beatPulse * 0.03));
+        sphereColor.lerpColors(SPHERE_BASE_COLOR, SPHERE_MID_COLOR, colorLift);
+        sphereGlowColor.lerpColors(SPHERE_MID_COLOR, SPHERE_PEAK_COLOR, colorLift);
+        sphereLightColor.lerpColors(SPHERE_LIGHT_COLOR, SPHERE_PEAK_COLOR, colorLift);
+        sphereMaterial.color.copy(sphereColor);
+        sphereMaterial.emissive.copy(sphereGlowColor);
+        sphereGlowMaterial.color.copy(sphereGlowColor);
+        sphereAuraMaterial.color.copy(sphereGlowColor);
+        sphereLight.color.copy(sphereLightColor);
+        sphereMaterial.emissiveIntensity = THREE.MathUtils.lerp(
+          sphereMaterial.emissiveIntensity,
+          0.42 + intensity * 1.5 + beatPulse * 0.95,
+          delta * 14
+        );
+        sphereMaterial.opacity = THREE.MathUtils.lerp(
+          sphereMaterial.opacity,
+          0.72 + intensity * 0.08 + beatPulse * 0.04,
+          delta * 14
+        );
+        sphereGlowMaterial.opacity = THREE.MathUtils.lerp(
+          sphereGlowMaterial.opacity,
+          0.1 + intensity * 0.08 + beatPulse * 0.1 + tempoPulse * 0.04,
+          delta * 12
+        );
+        sphereAuraMaterial.opacity = THREE.MathUtils.lerp(
+          sphereAuraMaterial.opacity,
+          (0.08 + intensity * 0.06 + beatPulse * 0.08 + tempoPulse * 0.03) *
+            sphereScaleMaster,
+          delta * 10
+        );
+        sphereAura.scale.setScalar(13.5 + intensity * 1.8 + beatPulse * 1.6);
+        sphereLight.intensity = THREE.MathUtils.lerp(
+          sphereLight.intensity,
+          3.6 + intensity * 2.8 + beatPulse * 3.2,
+          delta * 12
+        );
+
+        particlePoints.rotation.y += delta * sphereScaleMaster * (0.05 + treble * 0.4);
+        const positionsAttribute = particleGeometry.getAttribute(
+          "position"
+        ) as THREE.BufferAttribute;
+        const positionsArray = positionsAttribute.array as Float32Array;
+        const jitter = treble * 0.5 * sphereScaleMaster;
+
+        for (let index = 0; index < VISUALIZER_PARTICLE_COUNT; index += 1) {
+          const offset = index * 3;
+          positionsArray[offset] =
+            initialParticlePositions[offset] *
+            (1 + jitter * Math.sin(clock.elapsedTime * 5 + index));
+          positionsArray[offset + 1] =
+            initialParticlePositions[offset + 1] *
+            (1 + jitter * Math.cos(clock.elapsedTime * 6 + index));
+          positionsArray[offset + 2] =
+            initialParticlePositions[offset + 2] *
+            (1 + jitter * Math.sin(clock.elapsedTime * 4 + index));
+        }
+
+        positionsAttribute.needsUpdate = true;
+        particleMaterial.size = 0.05 + treble * 0.15;
+        particleColor.lerpColors(VISUALIZER_PARTICLE_BASE, VISUALIZER_PARTICLE_PEAK, treble);
+        particleMaterial.color.copy(particleColor);
+        particleMaterial.opacity = 0.2 + sphereScaleMaster * 0.6;
+
+        updateGlowBodies(glowBodies, delta * LIGHT_MOTION_MULTIPLIER * (1 + bass * 2.0 + treble * 1.5));
         keyLight.target.position.x =
           Math.sin(clock.elapsedTime * 0.2 * LIGHT_MOTION_MULTIPLIER) * 0.14;
 
@@ -401,6 +692,17 @@ export function NoteScene({
         disposeMaterial(noteClickTarget.material);
 
         scene.remove(noteRig);
+
+        sphereGeometry.dispose();
+        sphereMaterial.dispose();
+        sphereGlowGeometry.dispose();
+        sphereGlowMaterial.dispose();
+        disposeMaterial(sphereAura.material);
+        scene.remove(sphereRig);
+        particleGeometry.dispose();
+        particleMaterial.dispose();
+        scene.remove(visualizerRig);
+
         scene.remove(hemiLight);
         scene.remove(keyLight);
         scene.remove(keyLight.target);

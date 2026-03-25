@@ -27,6 +27,7 @@ type SpotifyTrack = {
   } | null;
   id?: string | null;
   name?: string | null;
+  preview_url?: string | null;
   uri?: string | null;
 };
 
@@ -248,6 +249,7 @@ function mapSpotifyTrack(entry: SpotifyPlaylistTrackItem, index: number) {
     artworkUrl: item.album?.images?.[0]?.url ?? null,
     durationMs: item.duration_ms ?? 0,
     id: item.id ?? `${item.uri ?? item.name}-${index}`,
+    previewUrl: item.preview_url ?? null,
     spotifyId: item.id ?? null,
     spotifyUrl: item.external_urls?.spotify ?? null,
     title: sanitizeSpotifyText(item.name ?? null) ?? "Untitled",

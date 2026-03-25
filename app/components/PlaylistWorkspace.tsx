@@ -1,17 +1,24 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 
 import type { PlaylistData, PlaylistSong } from "@/lib/playlist-types";
+import { audioManager } from "@/lib/audioManager";
 
 type PlaylistWorkspaceProps = {
   isVisible?: boolean;
+  onPlaySong?: (song: PlaylistSong) => void;
+  onStopSong?: () => void;
+  activeSongId?: string | null;
 };
 
 type RequestState = "idle" | "loading" | "publishing";
 
 export function PlaylistWorkspace({
   isVisible = false,
+  onPlaySong,
+  onStopSong,
+  activeSongId = null,
 }: PlaylistWorkspaceProps) {
   const [playlistUrl, setPlaylistUrl] = useState("");
   const [playlist, setPlaylist] = useState<PlaylistData | null>(null);
@@ -20,7 +27,53 @@ export function PlaylistWorkspace({
   const [error, setError] = useState<string | null>(null);
   const [publishedCode, setPublishedCode] = useState<string | null>(null);
 
+  const handlePlaySong = (song: PlaylistSong) => {
+    if (!audioManager || !song.previewUrl) return;
+
+    if (activeSongId === song.id) {
+      audioManager.stop();
+      if (onStopSong) onStopSong();
+    } else {
+      audioManager.play(song.previewUrl);
+      if (onPlaySong) onPlaySong(song);
+    }
+  };
+
+  const handleFileUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    const url = URL.createObjectURL(file);
+    const newSong: PlaylistSong = {
+      album: "Local Upload",
+      artists: ["Local Audio"],
+      artworkUrl: null,
+      durationMs: 0,
+      id: `local-${Date.now()}`,
+      previewUrl: url,
+      spotifyId: null,
+      spotifyUrl: null,
+      title: file.name,
+      uri: null,
+    };
+    
+    if (!playlist) {
+      setPlaylist({
+        description: "Your local audio testing playground.",
+        id: "local-playlist",
+        imageUrl: null,
+        owner: "You",
+        songs: [newSong],
+        spotifyUrl: "",
+        title: "Local Tracks",
+      });
+    }
+    
+    setSongs((prev) => [...prev, newSong]);
+    event.target.value = '';
+  };
+
   const hasSongs = songs.length > 0;
+  const isLocalPlaylist = playlist?.id === "local-playlist" || !playlist?.spotifyUrl;
 
   const handleLoadPlaylist = async () => {
     setRequestState("loading");
@@ -142,15 +195,20 @@ export function PlaylistWorkspace({
       <div className="playlist-workspace__panel">
         <div className="playlist-workspace__header">
           <div className="playlist-workspace__brand">
-            <SpotifyGlyph />
+            <WorkspaceGlyph isLocal={Boolean(isLocalPlaylist && playlist)} />
             <div>
-              <p className="playlist-workspace__eyebrow">Spotify</p>
-              <h2 className="playlist-workspace__title">Playlist</h2>
+              <p className="playlist-workspace__eyebrow">
+                {isLocalPlaylist && playlist ? "Local Audio" : "Spotify"}
+              </p>
+              <h2 className="playlist-workspace__title">
+                {isLocalPlaylist && playlist ? "Track Queue" : "Playlist"}
+              </h2>
             </div>
           </div>
           <p className="playlist-workspace__copy">
-            Paste a Spotify playlist link, reorder the songs, shuffle the stack,
-            and publish a backend code for the current sequence.
+            {isLocalPlaylist && playlist
+              ? "Upload local audio, reorder the queue, shuffle the stack, and publish the current sequence."
+              : "Paste a Spotify playlist link, reorder the songs, shuffle the stack, and publish a backend code for the current sequence."}
           </p>
         </div>
 
@@ -175,8 +233,22 @@ export function PlaylistWorkspace({
           </button>
         </div>
 
+        <div style={{ marginTop: "1rem", marginBottom: "1.5rem" }}>
+          <label className="playlist-workspace__secondary" style={{ display: "inline-block", cursor: "pointer", textAlign: "center", paddingInline: "1rem", width: "100%" }}>
+            Upload Local Audio Instead (No API Needed)
+            <input 
+              type="file" 
+              accept="audio/*" 
+              onChange={handleFileUpload} 
+              style={{ display: "none" }} 
+            />
+          </label>
+        </div>
+
         {playlist ? (
-          <div className="playlist-workspace__meta">
+          <div
+            className={`playlist-workspace__meta${isLocalPlaylist ? " playlist-workspace__meta--local" : ""}`}
+          >
             <div>
               <p className="playlist-workspace__meta-label">Loaded Playlist</p>
               <h3 className="playlist-workspace__meta-title">{playlist.title}</h3>
@@ -184,14 +256,16 @@ export function PlaylistWorkspace({
                 {playlist.owner} · {songs.length} songs
               </p>
             </div>
-            <a
-              className="playlist-workspace__meta-link"
-              href={playlist.spotifyUrl}
-              target="_blank"
-              rel="noreferrer"
-            >
-              Open On Spotify
-            </a>
+            {!isLocalPlaylist ? (
+              <a
+                className="playlist-workspace__meta-link"
+                href={playlist.spotifyUrl}
+                target="_blank"
+                rel="noreferrer"
+              >
+                Open On Spotify
+              </a>
+            ) : null}
           </div>
         ) : (
           <div className="playlist-workspace__empty">
@@ -226,12 +300,19 @@ export function PlaylistWorkspace({
 
         <div className="playlist-workspace__list">
           {songs.map((song, index) => (
-            <article key={`${song.id}-${index}`} className="playlist-song-card">
+            <article
+              key={`${song.id}-${index}`}
+              className={`playlist-song-card${!song.spotifyUrl ? " playlist-song-card--local" : ""}`}
+            >
               <div className="playlist-song-card__order">
                 {String(index + 1).padStart(2, "0")}
               </div>
               <div className="playlist-song-card__body">
-                <h4 className="playlist-song-card__title">{song.title}</h4>
+                <div className="playlist-song-card__title-row">
+                  <h4 className="playlist-song-card__title" title={song.title}>
+                    {song.title}
+                  </h4>
+                </div>
                 <p className="playlist-song-card__meta">
                   {song.artists.join(", ")} · {song.album}
                 </p>
@@ -240,6 +321,16 @@ export function PlaylistWorkspace({
                 {formatDuration(song.durationMs)}
               </div>
               <div className="playlist-song-card__controls">
+                <button
+                  type="button"
+                  className="playlist-song-card__button"
+                  onClick={() => handlePlaySong(song)}
+                  disabled={!song.previewUrl}
+                  title={!song.previewUrl ? "No preview available" : activeSongId === song.id ? "Stop Preview" : "Play Preview"}
+                  aria-label={activeSongId === song.id ? `Stop ${song.title}` : `Play ${song.title}`}
+                >
+                  {activeSongId === song.id ? "⏹" : "▶"}
+                </button>
                 <button
                   type="button"
                   className="playlist-song-card__button"
@@ -276,6 +367,41 @@ export function PlaylistWorkspace({
       </div>
     </section>
   );
+}
+
+function WorkspaceGlyph({ isLocal }: { isLocal: boolean }) {
+  if (isLocal) {
+    return (
+      <div className="playlist-workspace__local-glyph" aria-hidden="true">
+        <svg viewBox="0 0 64 64" fill="none">
+          <rect x="8" y="8" width="48" height="48" rx="20" fill="url(#localGlyphGradient)" />
+          <path
+            d="M26 21.5V40.5"
+            stroke="#F6EEFF"
+            strokeWidth="4.5"
+            strokeLinecap="round"
+          />
+          <path
+            d="M26 25L40 21.5V35"
+            stroke="#F6EEFF"
+            strokeWidth="4.5"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+          <circle cx="22.5" cy="42.5" r="5.5" fill="#F6EEFF" />
+          <circle cx="36.5" cy="37.5" r="5.5" fill="#F6EEFF" />
+          <defs>
+            <linearGradient id="localGlyphGradient" x1="12" y1="10" x2="54" y2="54" gradientUnits="userSpaceOnUse">
+              <stop stopColor="#C38BFF" />
+              <stop offset="1" stopColor="#6E45D3" />
+            </linearGradient>
+          </defs>
+        </svg>
+      </div>
+    );
+  }
+
+  return <SpotifyGlyph />;
 }
 
 function SpotifyGlyph() {
