@@ -10,6 +10,7 @@ import { BottomPlayer } from "@/app/components/BottomPlayer";
 import { LyricsOverlay } from "@/app/components/LyricsOverlay";
 import type { PlaylistSong } from "@/lib/playlist-types";
 import { fetchLyrics, TrackLyrics } from "@/lib/lyrics";
+import { audioManager } from "@/lib/audioManager";
 
 type ViewState = "home" | "toLogo" | "logo" | "toHome";
 
@@ -62,8 +63,16 @@ export default function Home() {
       )}
       <PlaylistWorkspace
         isVisible={isPlaylistWorkspaceVisible}
-        onPlaySong={(song) => setPlayingSong(song)}
-        onStopSong={() => setPlayingSong(null)}
+        onPlaySong={(song) => {
+          setPlayingSong(song);
+          if (song.previewUrl && audioManager) {
+            audioManager.play(song.previewUrl);
+          }
+        }}
+        onStopSong={() => {
+          setPlayingSong(null);
+          if (audioManager) audioManager.stop();
+        }}
         activeSongId={playingSong?.id ?? null}
       />
       <WordmarkOverlay isVisible={isUiVisible} />
