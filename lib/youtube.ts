@@ -17,48 +17,6 @@ export function getPlaylistId(url: string): string | null {
   }
 }
 
-/**
- * Fetches playlist metadata and all tracks from the open Piped API.
- */
-export async function fetchYoutubePlaylist(playlistUrl: string): Promise<{ songs: PlaylistSong[], title: string, owner: string, imageUrl: string | null } | null> {
-  const playlistId = getPlaylistId(playlistUrl);
-  if (!playlistId) return null;
-
-  try {
-    const res = await fetch(`https://pipedapi.kavin.rocks/playlists/${playlistId}`);
-    if (!res.ok) throw new Error(`Piped API returned ${res.status}`);
-    const data = await res.json();
-    
-    // Convert related streams into our standard PlaylistSong format
-    const songs: PlaylistSong[] = (data.relatedStreams || []).map((track: any) => {
-      // The track url looks like "/watch?v=dQw4w9WgXcQ"
-      const videoId = track.url.split("v=")[1];
-      
-      return {
-        id: `yt-${videoId}`,
-        title: track.title,
-        artists: track.uploaderName ? [track.uploaderName] : ["Unknown Channel"],
-        album: "YouTube Audio",
-        durationMs: track.duration * 1000,
-        artworkUrl: track.thumbnail || null,
-        previewUrl: null, // Audio stream fetched on-demand to prevent expiration
-        spotifyId: videoId, // Reusing spotifyId field to store YouTube videoId for play lookup
-        spotifyUrl: `https://youtube.com/watch?v=${videoId}`,
-        uri: null,
-      };
-    });
-
-    return {
-      songs,
-      title: data.name || "YouTube Playlist",
-      owner: data.uploader || "Unknown",
-      imageUrl: data.thumbnailUrl || null
-    };
-  } catch (err) {
-    console.error("YouTube Fetch Error:", err);
-    return null;
-  }
-}
 
 /**
  * Resolves the actual playable audio URL (`.m4a` or `.webm`) for a given YouTube Video ID.
@@ -91,37 +49,55 @@ export async function getYoutubeAudioStream(videoId: string): Promise<string | n
 
 /**
  * Searches for a YouTube track by name using our backend proxy (bypasses browser CORS).
- * Returns the top result formatted as a PlaylistSong.
+ * Returns an array of the top 5 results formatted as PlaylistSongs.
  */
-export async function searchYoutubeTrack(query: string): Promise<PlaylistSong | null> {
-  if (!query) return null;
+export async function searchYoutubeTrack(query: string): Promise<PlaylistSong[]> {
+  if (!query) return [];
   
   try {
     const res = await fetch(`/api/youtube/search?query=${encodeURIComponent(query)}`);
     if (!res.ok) throw new Error(`Search Proxy returned ${res.status}`);
     const data = await res.json();
     
-    if (!data.items || data.items.length === 0) return null;
+    if (!data.items || data.items.length === 0) return [];
     
-    // Attempt to find the best match (video/audio type)
-    const track = data.items.find((i: any) => i.type === "stream" && i.duration > 0) || data.items[0];
-    const videoId = track.url.split("v=")[1];
-    
-    return {
-      id: `yt-search-${videoId}`,
-      title: track.title,
-      artists: track.uploaderName ? [track.uploaderName] : ["YouTube Query"],
-      album: "YouTube Track",
-      durationMs: track.duration * 1000,
-      artworkUrl: track.thumbnail || null,
-      previewUrl: null, // Fetched on demand via backend proxy
-      spotifyId: videoId, // Reusing spotifyId field to store YouTube videoId for extraction
-      spotifyUrl: `https://youtube.com/watch?v=${videoId}`,
-      uri: null,
-    };
+    return data.items.map((track: any) => {
+      const videoId = track.url.split("v=")[1];
+      return {
+        id: `yt-search-${videoId}`,
+        title: track.title,
+        artists: track.uploaderName ? [track.uploaderName] : ["YouTube Query"],
+        album: "YouTube Track",
+        durationMs: track.duration * 1000,
+        artworkUrl: track.thumbnail || null,
+        previewUrl: null, // Fetched on demand via backend proxy
+        spotifyId: videoId, // Reusing spotifyId field to store YouTube videoId for extraction
+        spotifyUrl: `https://youtube.com/watch?v=${videoId}`,
+        uri: null,
+      };
+    });
   } catch (err) {
     console.error("YouTube Search Error:", err);
-    return null;
+    return [];
   }
 }
+
+/**
+ * Fetches an entire YouTube Playlist's videos by its list ID.
+ * Returns an array of PlaylistSongs instantly parsed via yt-dlp `--flat-playlist`.
+ */
+export async function fetchYoutubePlaylist(listId: string): Promise<PlaylistSong[]> {
+  if (!listId) return [];
+  
+  try {
+    const res = await fetch(`/api/youtube/playlist?listId=${encodeURIComponent(listId)}`);
+    if (!res.ok) throw new Error(`Playlist Proxy returned ${res.status}`);
+    const data = await res.json();
+    return data.items || [];
+  } catch (err) {
+    console.error("YouTube Playlist Error:", err);
+    return [];
+  }
+}
+
 

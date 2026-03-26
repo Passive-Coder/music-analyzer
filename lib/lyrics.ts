@@ -37,8 +37,8 @@ function parseTimeStr(timeStr: string): number {
 export function parseSyncedLyrics(lrcString: string): TrackLyrics {
   const lines: LyricLine[] = [];
   const rawLines = lrcString.split('\n');
-  const lineRegex = /^\[(\d{2,3}:\d{2}\.\d{2,3})\](.*)$/;
-  const wordRegex = /<(\d{2,3}:\d{2}\.\d{2,3})>([^<]+)/g;
+  const lineRegex = /^\[(\d{1,3}:\d{2}(?:\.\d{1,3})?)\](.*)$/;
+  const wordRegex = /<(\d{1,3}:\d{2}(?:\.\d{1,3})?)>([^<]*)/g;
 
   for (let i = 0; i < rawLines.length; i++) {
     const rawLine = rawLines[i].trim();
@@ -138,7 +138,9 @@ export async function fetchLyrics(title: string, artist: string, duration?: numb
     if (artist === "Local Audio") {
       const cleanName = title
         .replace(/\.[^/.]+$/, "") // Remove file extension
-        .replace(/^\d+[\s.-]+/, ""); // Remove track numbers like "03 - "
+        .replace(/\(feat\..*?\)/i, "")
+        .replace(/\[.*?\]/g, "") // Remove [Official Video]
+        .replace(/^\d+[\s.-]+/g, ""); // Remove track numbers like "03 - "
 
       const searchUrl = `https://lrclib.net/api/search?q=${encodeURIComponent(cleanName)}`;
       const searchRes = await fetch(searchUrl, {
@@ -157,30 +159,96 @@ export async function fetchLyrics(title: string, artist: string, duration?: numb
     // Standard strict match for Spotify tracks
     const _trackName = encodeURIComponent(title.replace(/\(feat\..*?\)/i, "").trim());
     const _artistName = encodeURIComponent(artist.trim());
-    let url = `https://lrclib.net/api/get?track_name=${_trackName}&artist_name=${_artistName}`;
-    
-    if (duration && duration > 0) {
-      url += `&duration=${Math.round(duration)}`;
+    let cleanedTitle = title;
+    let cleanedArtist = artist;
+
+    // 1. Remove artist from title if it starts with "Artist - "
+    if (artist && title.toLowerCase().startsWith(artist.toLowerCase())) {
+        cleanedTitle = title.substring(artist.length).replace(/^[\s\-_:=]+/, "");
+    } else if (title.includes(" - ")) {
+        // Handle common "Artist - Title" format from YouTube
+        const parts = title.split(" - ");
+        if (parts.length >= 2) {
+            // If the first part looks like the artist we have, or artist is "YouTube", use second part as title
+            if (!artist || artist === "YouTube" || artist.toLowerCase().includes(parts[0].toLowerCase())) {
+                cleanedArtist = parts[0].trim();
+                cleanedTitle = parts[1].trim();
+            }
+        }
     }
 
-    const response = await fetch(url, {
-      headers: {
-        "User-Agent": "MusicAnalyzerClient/0.1.0"
-      }
+    // 2. Remove common YouTube suffixes
+    cleanedTitle = cleanedTitle
+        .replace(/\(feat\..*?\)/i, "")
+        .replace(/\(Official.*?\)/i, "")
+        .replace(/\[Official.*?\]/i, "")
+        .replace(/\(Lyrics\)/i, "")
+        .replace(/\[Lyrics\]/i, "")
+        .trim();
+
+    const baseUrl = "https://lrclib.net/api/get";
+    const params = new URLSearchParams({
+      track_name: cleanedTitle,
+      artist_name: cleanedArtist === "YouTube" || !cleanedArtist ? "" : cleanedArtist
     });
 
-    if (!response.ok) {
-      console.warn("LRCLIB API returned", response.status);
-      return null;
+    // Try with duration first (most precise)
+    const urlWithDuration = `${baseUrl}?${params.toString()}&duration=${Math.round(duration)}`;
+    const response = await fetch(urlWithDuration, {
+      headers: { "User-Agent": "MusicAnalyzerClient/0.1.0" }
+    });
+
+    if (response.ok) {
+      const data = await response.json();
+      if (data.syncedLyrics) return parseSyncedLyrics(data.syncedLyrics);
     }
 
-    const data = await response.json();
-    if (data.syncedLyrics) {
-      return parseSyncedLyrics(data.syncedLyrics);
+    // Fallback: Try without duration (more lenient)
+    const urlWithoutDuration = `${baseUrl}?${params.toString()}`;
+    const responseNoDuration = await fetch(urlWithoutDuration, {
+      headers: { "User-Agent": "MusicAnalyzerClient/0.1.0" }
+    });
+
+    if (responseNoDuration.ok) {
+      const data = await responseNoDuration.json();
+      if (data.syncedLyrics) return parseSyncedLyrics(data.syncedLyrics);
+    }
+    
+    // Last resort: Search
+    const searchQuery = `${cleanedTitle} ${cleanedArtist === "YouTube" ? "" : cleanedArtist}`.trim();
+    const searchRes = await fetch(`https://lrclib.net/api/search?q=${encodeURIComponent(searchQuery)}`, {
+      headers: { "User-Agent": "MusicAnalyzerClient/0.1.0" }
+    });
+    if (searchRes.ok) {
+      const searchData = await searchRes.json();
+      const best = searchData.find((t: any) => {
+        if (!t.syncedLyrics) return false;
+        if (!duration) return true; // Accept anything if we don't know duration
+        return Math.abs(t.duration - duration) < 15;
+      });
+      if (best) return parseSyncedLyrics(best.syncedLyrics);
     }
     return null;
   } catch (err) {
     console.error("Failed to fetch lyrics:", err);
     return null;
+  }
+}
+
+/**
+ * Manually search for lyrics candidates without duration constraint.
+ * Useful for the "Search Lyrics" UI.
+ */
+export async function searchLyrics(query: string): Promise<any[]> {
+  try {
+    const res = await fetch(`https://lrclib.net/api/search?q=${encodeURIComponent(query)}`, {
+      headers: { "User-Agent": "MusicAnalyzerClient/0.1.0" }
+    });
+    if (!res.ok) return [];
+    const data = await res.json();
+    return data.filter((t: any) => t.syncedLyrics);
+  } catch (err) {
+    console.error("Search lyrics failed:", err);
+    return [];
   }
 }

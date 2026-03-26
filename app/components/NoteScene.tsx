@@ -20,7 +20,7 @@ const LOGO_CLICK_TARGET_SIZE = new THREE.Vector3(8.8, 9.6, 4.4);
 const HOME_CAMERA_FOV = 36;
 const PLAYING_CAMERA_FOV = 60;
 const PLAYING_CAMERA_Z = 15;
-const VISUALIZER_Y_OFFSET = 2.2;
+const VISUALIZER_Y_OFFSET = 0.5;
 const PLAYING_VISUALIZER_SCALE = 0.84;
 const VISUALIZER_BG_COLOR = new THREE.Color(0x030303);
 const VISUALIZER_COLOR_A = new THREE.Color(0x00f3ff);
@@ -37,6 +37,7 @@ type NoteSceneProps = {
   isLogoMode?: boolean;
   isPlayingMode?: boolean;
   isPromoted?: boolean;
+  showLyrics?: boolean;
   onNoteClick?: () => void;
   onTransitionComplete?: (mode: "home" | "logo") => void;
 };
@@ -45,6 +46,7 @@ export function NoteScene({
   isLogoMode = false,
   isPlayingMode = false,
   isPromoted = false,
+  showLyrics = false,
   onNoteClick,
   onTransitionComplete,
 }: NoteSceneProps) {
@@ -53,6 +55,7 @@ export function NoteScene({
   const isPlayingModeRef = useRef(isPlayingMode);
   const onNoteClickRef = useRef(onNoteClick);
   const onTransitionCompleteRef = useRef(onTransitionComplete);
+  const showLyricsRef = useRef(showLyrics);
 
   useEffect(() => {
     isLogoModeRef.current = isLogoMode;
@@ -69,6 +72,10 @@ export function NoteScene({
   useEffect(() => {
     onTransitionCompleteRef.current = onTransitionComplete;
   }, [onTransitionComplete]);
+
+  useEffect(() => {
+    showLyricsRef.current = showLyrics;
+  }, [showLyrics]);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -565,6 +572,13 @@ export function NoteScene({
           visualizerRig.position.y,
           playingYOffset,
           delta * 6
+        );
+
+        const targetXOffset = showLyricsRef.current ? -3.2 : 0;
+        visualizerRig.position.x = THREE.MathUtils.lerp(
+          visualizerRig.position.x,
+          targetXOffset * sphereScaleMaster,
+          delta * 4
         );
         visualizerRig.rotation.y += delta * sphereScaleMaster * (0.05 + mid * 0.2);
         ambientColor.lerpColors(VISUALIZER_COLOR_A, VISUALIZER_COLOR_B, mid);

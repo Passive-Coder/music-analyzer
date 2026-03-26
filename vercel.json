@@ -1,0 +1,11 @@
+{
+  "functions": {
+    "app/api/extract-audio/route.ts": {
+      "maxDuration": 60,
+      "memory": 1024
+    },
+    "app/api/youtube/playlist/route.ts": {
+      "maxDuration": 30
+    }
+  }
+}

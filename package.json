@@ -11,6 +11,7 @@
   },
   "dependencies": {
     "@distube/ytdl-core": "^4.16.12",
+    "@upstash/redis": "^1.37.0",
     "next": "16.2.1",
     "play-dl": "^1.9.7",
     "react": "19.2.4",

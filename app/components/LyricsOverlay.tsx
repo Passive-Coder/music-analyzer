@@ -1,11 +1,12 @@
 "use client";
 
-import { useEffect, useRef, useCallback } from "react";
+import { useEffect, useRef, useCallback, useState } from "react";
 import { audioManager } from "@/lib/audioManager";
 import { TrackLyrics } from "@/lib/lyrics";
 
 interface LyricsOverlayProps {
-  lyrics: TrackLyrics;
+  lyrics: TrackLyrics | null;
+  isVisible: boolean;
 }
 
 /**
@@ -30,74 +31,37 @@ function findActiveLine(lyrics: TrackLyrics, time: number): number {
     }
   }
 
-  // result is the last line whose start <= time
-  if (result !== -1) {
-    const line = lines[result];
-    // Allow a 2-second grace after the line ends for visual persistence
-    if (time <= line.end + 2) {
-      return result;
-    }
-    // Check if we're in a gap close to the next line
-    if (result + 1 < lines.length && lines[result + 1].start - time < 2) {
-      return result + 1;
-    }
-  } else if (lines.length > 0 && lines[0].start - time < 2) {
-    return 0;
-  }
-
-  return result !== -1 ? result : -1;
+  // Greedy persistence: if we found a line that started before/at current time, 
+  // return it even if it was a while ago. This keeps the 'window' anchored 
+  // correctly during long instrumentals.
+  return result;
 }
 
-export function LyricsOverlay({ lyrics }: LyricsOverlayProps) {
+export function LyricsOverlay({ lyrics, isVisible }: LyricsOverlayProps) {
   const containerRef = useRef<HTMLDivElement>(null);
-  const activeLineRef = useRef(-1);
+  const [activeIndex, setActiveIndex] = useState(-1);
+  const activeIndexRef = useRef(-1);
 
   const updateWords = useCallback(() => {
     const container = containerRef.current;
     if (!container || !audioManager) return;
 
     const currentTime = audioManager.getCurrentTime();
-
+    
     // Find active line via binary search
-    const newActiveLineIndex = lyrics.synced
+    const newActiveLineIndex = (lyrics && lyrics.synced)
       ? findActiveLine(lyrics, currentTime)
       : -1;
 
     // Update line visibility if the active line changed
-    if (newActiveLineIndex !== activeLineRef.current) {
-      activeLineRef.current = newActiveLineIndex;
+    if (newActiveLineIndex !== activeIndexRef.current) {
+      activeIndexRef.current = newActiveLineIndex;
+      setActiveIndex(newActiveLineIndex);
 
-      const lineEls = container.querySelectorAll<HTMLElement>(".lyrics-line");
-      for (let i = 0; i < lineEls.length; i++) {
-        const lineEl = lineEls[i];
-        const lineIdx = parseInt(lineEl.dataset.lineIdx || "-1", 10);
-
-        lineEl.classList.remove(
-          "lyrics-line--active",
-          "lyrics-line--prev",
-          "lyrics-line--next",
-          "lyrics-line--far"
-        );
-
-        if (lineIdx === newActiveLineIndex) {
-          lineEl.classList.add("lyrics-line--active");
-        } else if (lineIdx === newActiveLineIndex - 1) {
-          lineEl.classList.add("lyrics-line--prev");
-        } else if (
-          lineIdx === newActiveLineIndex + 1 ||
-          lineIdx === newActiveLineIndex + 2
-        ) {
-          lineEl.classList.add("lyrics-line--next");
-        } else {
-          lineEl.classList.add("lyrics-line--far");
-        }
-      }
-
-      // Auto-scroll to keep active line centered
-      const activeLine = container.querySelector(".lyrics-line--active");
-      if (activeLine) {
-        activeLine.scrollIntoView({ behavior: "smooth", block: "center" });
-      }
+      // Perform a small delay to let React re-render the new lines before 
+      // class manipulation, or just rely on the next animation frame.
+      // Actually, since we use state, we can move the class logic into the render phase
+      // for line-level states, which is more idiomatic React anyway.
     }
 
     // Update word-level highlights via direct DOM manipulation (no React re-render)
@@ -111,15 +75,22 @@ export function LyricsOverlay({ lyrics }: LyricsOverlayProps) {
         if (!span.classList.contains("sung")) {
           span.classList.remove("active");
           span.classList.add("sung");
+          span.style.backgroundPosition = "0 0";
         }
       } else if (currentTime >= start && currentTime < end) {
         if (!span.classList.contains("active")) {
           span.classList.add("active");
           span.classList.remove("sung");
         }
+        // Direct sync: calculate sweep percentage based on exact current time
+        const duration = end - start;
+        const progress = (currentTime - start) / (duration || 1);
+        const percent = Math.max(0, Math.min(100, (1 - progress) * 100));
+        span.style.backgroundPosition = `${percent}% 0`;
       } else {
         if (span.classList.contains("active") || span.classList.contains("sung")) {
           span.classList.remove("active", "sung");
+          span.style.backgroundPosition = "100% 0";
         }
       }
     }
@@ -137,19 +108,27 @@ export function LyricsOverlay({ lyrics }: LyricsOverlayProps) {
     return () => cancelAnimationFrame(animationFrameId);
   }, [updateWords]);
 
+  if (!isVisible) return null;
+
   if (!lyrics || !lyrics.synced || lyrics.lines.length === 0) {
-    return null;
+    return (
+      <div className="lyrics-overlay lyrics-overlay--empty">
+        <div className="lyrics-overlay__container">
+          <div className="lyrics-line lyrics-line--active">
+            Lyrics not available
+          </div>
+        </div>
+      </div>
+    );
   }
 
-  // Render a window of lines around the expected playback area
-  // We render ALL lines but CSS controls visibility via class states
-  const activeIdx = activeLineRef.current;
-  const startIdx = Math.max(0, activeIdx - 2);
-  const endIdx = Math.min(lyrics.lines.length - 1, activeIdx + 4);
-  const renderLines = lyrics.lines.slice(
-    startIdx < 0 ? 0 : startIdx,
-    (endIdx < 0 ? 6 : endIdx) + 1
-  );
+  // Render a small window at the bottom: 
+  // Show the previous line, active line, and next 2 lines if possible.
+  const activeIdx = activeIndex;
+  // Show active line and next 1 line only for maximum clarity/minimal overlap
+  const startIdx = activeIdx; 
+  const endIdx = Math.min(lyrics.lines.length - 1, activeIdx + 1);
+  const renderLines = lyrics.lines.slice(startIdx, endIdx + 1);
 
   return (
     <div className="lyrics-overlay" ref={containerRef}>

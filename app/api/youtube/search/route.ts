@@ -25,46 +25,44 @@ export async function GET(request: Request) {
     
     const data = JSON.parse(match[1]);
     
-    // Safely navigate the deeply nested JSON to find the first video renderer
+    // Safely navigate the deeply nested JSON to find the video renderers
     const contents = data?.contents?.twoColumnSearchResultsRenderer?.primaryContents?.sectionListRenderer?.contents;
     if (!contents) throw new Error("Could not parse YouTube search contents");
 
-    let videoRenderer = null;
+    const results = [];
     for (const section of contents) {
       if (section.itemSectionRenderer?.contents) {
-        const video = section.itemSectionRenderer.contents.find((c: any) => c.videoRenderer);
-        if (video) {
-          videoRenderer = video.videoRenderer;
-          break;
+        for (const c of section.itemSectionRenderer.contents) {
+            if (c.videoRenderer) {
+                const videoRenderer = c.videoRenderer;
+                results.push({
+                    type: "stream",
+                    title: videoRenderer.title?.runs?.[0]?.text || query,
+                    uploaderName: videoRenderer.ownerText?.runs?.[0]?.text || "YouTube",
+                    url: `/watch?v=${videoRenderer.videoId}`,
+                    thumbnail: videoRenderer.thumbnail?.thumbnails?.[0]?.url || "",
+                    // Convert lengthText (e.g. "6:00") to seconds. If undefined (e.g. live stream), use 0.
+                    duration: videoRenderer.lengthText?.simpleText 
+                        ? videoRenderer.lengthText.simpleText.split(':').reduce((acc: number, time: string) => (60 * acc) + parseInt(time, 10), 0)
+                        : 0
+                });
+
+                if (results.length >= 5) break;
+            }
         }
+        if (results.length >= 5) break;
       }
     }
 
-    if (!videoRenderer) {
+    if (results.length === 0) {
       throw new Error("No video results found");
     }
 
-    // Format the result to mimic the expected Piped format for the frontend
-    const result = {
-      items: [
-        {
-          type: "stream",
-          title: videoRenderer.title?.runs?.[0]?.text || query,
-          uploaderName: videoRenderer.ownerText?.runs?.[0]?.text || "YouTube",
-          url: `/watch?v=${videoRenderer.videoId}`,
-          thumbnail: videoRenderer.thumbnail?.thumbnails?.[0]?.url || "",
-          // Convert lengthText (e.g. "6:00") to seconds. If undefined (e.g. live stream), use 0.
-          duration: videoRenderer.lengthText?.simpleText 
-            ? videoRenderer.lengthText.simpleText.split(':').reduce((acc: number, time: string) => (60 * acc) + parseInt(time, 10), 0)
-            : 0
-        }
-      ]
-    };
-
-    return NextResponse.json(result);
+    return NextResponse.json({ items: results });
   } catch (err: any) {
     console.error("YouTube Search Proxy Error:", err);
     return NextResponse.json({ error: err.message }, { status: 500 });
   }
 }
+
 

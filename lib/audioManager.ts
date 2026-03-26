@@ -1,3 +1,5 @@
+import type { PlaylistSong } from "./playlist-types";
+
 export class AudioManager {
   audioContext: AudioContext | null = null;
   audioElement: HTMLAudioElement | null = null;
@@ -5,6 +7,8 @@ export class AudioManager {
   analyserNode: AnalyserNode | null = null;
   isPlaying: boolean = false;
   frequencyData: Uint8Array | null = null;
+  onEndedCallback: (() => void) | null = null;
+  currentSong: PlaylistSong | null = null;
 
   init() {
     if (!this.audioContext && typeof window !== "undefined") {
@@ -22,6 +26,9 @@ export class AudioManager {
 
       this.audioElement.addEventListener("ended", () => {
         this.isPlaying = false;
+        if (this.onEndedCallback) {
+          this.onEndedCallback();
+        }
       });
       this.audioElement.addEventListener("pause", () => {
         this.isPlaying = false;
@@ -53,10 +60,26 @@ export class AudioManager {
     }
   }
 
+  async resume() {
+    if (!this.audioElement || !this.audioContext) return;
+    if (this.audioContext.state === "suspended") {
+      await this.audioContext.resume();
+    }
+    try {
+      await this.audioElement.play();
+    } catch (e) {
+      console.error("Audio resume failed", e);
+    }
+  }
+
   pause() {
     if (this.audioElement) {
       this.audioElement.pause();
     }
+  }
+
+  setOnEnded(callback: () => void) {
+    this.onEndedCallback = callback;
   }
 
   stop() {
