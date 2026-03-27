@@ -4,10 +4,9 @@ export type PlaylistSong = {
   artworkUrl: string | null;
   durationMs: number;
   id: string;
-  spotifyId: string | null;
-  spotifyUrl: string | null;
+  sourceId: string | null;
+  sourceUrl: string | null;
   title: string;
-  uri: string | null;
 };
 
 export type PlaylistData = {
@@ -16,7 +15,7 @@ export type PlaylistData = {
   imageUrl: string | null;
   owner: string;
   songs: PlaylistSong[];
-  spotifyUrl: string;
+  sourceUrl: string;
   title: string;
 };
 

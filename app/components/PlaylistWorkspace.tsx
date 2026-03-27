@@ -15,7 +15,7 @@ type SongEntry = {
 };
 
 const EXAMPLE_PLAYLIST: PlaylistData = {
-  description: "Fallback data shown when the Spotify playlist request fails.",
+  description: "Fallback data shown when the YouTube playlist request fails.",
   id: "example-fallback-playlist",
   imageUrl: null,
   owner: "Octave Demo",
@@ -91,7 +91,7 @@ const EXAMPLE_PLAYLIST: PlaylistData = {
       232000
     ),
   ],
-  spotifyUrl: "https://open.spotify.com/",
+  sourceUrl: "https://www.youtube.com/",
   title: "Example Playlist",
 };
 
@@ -164,7 +164,7 @@ export function PlaylistWorkspace({
     setPublishedCode(null);
 
     try {
-      const response = await fetch("/api/spotify/playlist", {
+      const response = await fetch("/api/youtube/playlist", {
         body: JSON.stringify({ playlistUrl }),
         headers: {
           "Content-Type": "application/json",
@@ -219,7 +219,7 @@ export function PlaylistWorkspace({
         body: JSON.stringify({
           playlist,
           songs: batchSongs,
-          sourceUrl: playlistUrl || playlist.spotifyUrl,
+          sourceUrl: playlistUrl || playlist.sourceUrl,
         }),
         headers: {
           "Content-Type": "application/json",
@@ -331,14 +331,14 @@ export function PlaylistWorkspace({
           <div className="playlist-workspace__loader">
             <label className="playlist-workspace__field">
               <span className="playlist-workspace__label">
-                Spotify Playlist Link
+                YouTube Playlist Link
               </span>
               <input
                 className="playlist-workspace__input"
                 type="url"
                 value={playlistUrl}
                 onChange={(event) => setPlaylistUrl(event.target.value)}
-                placeholder="https://open.spotify.com/playlist/..."
+                placeholder="https://www.youtube.com/playlist?list=..."
               />
             </label>
             <button
@@ -450,7 +450,7 @@ export function PlaylistWorkspace({
                                 href={getSongPlaybackUrl(song)}
                                 target="_blank"
                                 rel="noreferrer"
-                                aria-label={`Play ${song.title} on Spotify`}
+                                aria-label={`Play ${song.title} on YouTube`}
                               >
                                 ▶
                               </a>
@@ -490,14 +490,16 @@ export function PlaylistWorkspace({
         <aside className="playlist-workspace__songs-pane">
           <div className="playlist-workspace__header playlist-workspace__header--meta">
             <div className="playlist-workspace__brand">
-              <SpotifyGlyph />
-              <div>
-                <p className="playlist-workspace__eyebrow">Spotify</p>
-                <h2 className="playlist-workspace__title">Playlist</h2>
+              <div className="playlist-workspace__brand-copy">
+                <p className="playlist-workspace__eyebrow">YouTube</p>
+                <div className="playlist-workspace__brand-row">
+                  <YouTubeGlyph />
+                  <h2 className="playlist-workspace__title">Playlist</h2>
+                </div>
               </div>
             </div>
             <p className="playlist-workspace__copy">
-              Paste a Spotify playlist link, reorder the songs, edit any slot,
+              Paste a YouTube playlist link, reorder the songs, edit any slot,
               shuffle the stack, and publish a backend code for the current
               sequence.
             </p>
@@ -518,11 +520,11 @@ export function PlaylistWorkspace({
               </div>
               <a
                 className="playlist-workspace__meta-link"
-                href={playlist.spotifyUrl}
+                href={playlist.sourceUrl}
                 target="_blank"
                 rel="noreferrer"
               >
-                Open On Spotify
+                Open On YouTube
               </a>
             </div>
           ) : (
@@ -531,9 +533,8 @@ export function PlaylistWorkspace({
                 No playlist loaded yet.
               </p>
               <p className="playlist-workspace__empty-copy">
-                The loader uses Spotify&apos;s Web API. If the request is
-                rejected, configure `SPOTIFY_ACCESS_TOKEN` or your Spotify app
-                credentials on the server.
+                The loader uses the YouTube Data API. If the request is
+                rejected, configure `YOUTUBE_API_KEY` on the server.
               </p>
             </div>
           )}
@@ -645,7 +646,7 @@ export function PlaylistWorkspace({
                               href={getSongPlaybackUrl(song)}
                               target="_blank"
                               rel="noreferrer"
-                              aria-label={`Play ${song.title} on Spotify`}
+                              aria-label={`Play ${song.title} on YouTube`}
                             >
                               ▶
                             </a>
@@ -723,32 +724,20 @@ export function PlaylistWorkspace({
   );
 }
 
-function SpotifyGlyph() {
+function YouTubeGlyph() {
   return (
-    <div className="spotify-glyph" aria-hidden="true">
+    <div className="youtube-glyph" aria-hidden="true">
       <svg viewBox="0 0 64 64" fill="none">
-        <circle cx="32" cy="32" r="30.5" fill="#1ED760" stroke="#08120D" strokeWidth="3" />
-        <path
-          d="M15.6 23.2C25.8 20 39.6 20.8 49.5 26.4"
-          stroke="#08120D"
-          strokeWidth="4.6"
-          strokeLinecap="round"
-          strokeLinejoin="round"
+        <circle cx="32" cy="32" r="30" fill="#FF1400" />
+        <circle
+          cx="32"
+          cy="32"
+          r="16.8"
+          stroke="#FFFFFF"
+          strokeWidth="2"
+          fill="none"
         />
-        <path
-          d="M16.7 32.7C26.2 30.1 38.4 30.6 47.5 35.7"
-          stroke="#08120D"
-          strokeWidth="4"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        />
-        <path
-          d="M17.8 41.6C26.4 39.7 37.1 40.1 45.1 44.2"
-          stroke="#08120D"
-          strokeWidth="3"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        />
+        <path d="M25.8 23.9L40.8 32L25.8 40.1V23.9Z" fill="#FFFFFF" />
       </svg>
     </div>
   );
@@ -763,12 +752,12 @@ function formatDuration(durationMs: number) {
 }
 
 function getSongPlaybackUrl(song: PlaylistSong) {
-  if (song.spotifyUrl) {
-    return song.spotifyUrl;
+  if (song.sourceUrl) {
+    return song.sourceUrl;
   }
 
   const searchQuery = encodeURIComponent(`${song.title} ${song.artists.join(" ")}`);
-  return `https://open.spotify.com/search/${searchQuery}`;
+  return `https://www.youtube.com/results?search_query=${searchQuery}`;
 }
 
 function chunkSongEntries(entries: SongEntry[], chunkSize: number) {
@@ -927,9 +916,8 @@ function createExampleSong(
     artworkUrl: null,
     durationMs,
     id,
-    spotifyId: null,
-    spotifyUrl: null,
+    sourceId: null,
+    sourceUrl: null,
     title,
-    uri: null,
   };
 }

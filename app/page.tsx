@@ -30,10 +30,17 @@ export default function Home() {
   const isUiVisible = viewState === "home";
   const isScenePromoted = false;
   const isPlaylistWorkspaceVisible = viewState === "logo";
+  const isPlaylistThemeActive = viewState === "toLogo" || viewState === "logo";
 
   return (
-    <main className="page">
-      <PageBackground />
+    <main className={`page${isPlaylistThemeActive ? " page--playlist" : ""}`}>
+      <PageBackground isPlaylistMode={isPlaylistThemeActive} />
+      <div
+        className={`page-playlist-transition${
+          isPlaylistThemeActive ? " is-active" : ""
+        }`}
+        aria-hidden="true"
+      />
       <NoteScene
         isLogoMode={isTargetLogo}
         isPromoted={isScenePromoted}

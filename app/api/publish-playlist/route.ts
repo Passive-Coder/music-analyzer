@@ -23,7 +23,7 @@ export async function POST(request: Request) {
     const sourceUrl =
       typeof payload.sourceUrl === "string"
         ? payload.sourceUrl.trim()
-        : payload.playlist.spotifyUrl;
+        : payload.playlist.sourceUrl;
 
     const record = await createPublishedPlaylistRecord({
       playlist: payload.playlist,

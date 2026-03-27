@@ -4,17 +4,25 @@ import { useEffect, useRef } from "react";
 import * as THREE from "three";
 
 const DESCRIPTION =
-  "A centered metallic light purple 3D music note tilted 15 degrees clockwise on a very dark purple background with subtle moving light purple accents.";
+  "A centered metallic blue-silver 3D music note tilted 15 degrees clockwise on a deep blue-black background with intense moving cobalt and electric-blue accents.";
 const LIGHT_MOTION_MULTIPLIER = 1.5;
 const IDLE_TILT_LIMIT = THREE.MathUtils.degToRad(5);
 const BASE_NOTE_TILT = -Math.PI / 12;
 const LOGO_MODE_SCALE = 0.28;
 const LOGO_TRANSITION_DURATION = 1.25;
 const FULL_ROTATION = Math.PI * 2;
-const HOME_NOTE_COLOR = new THREE.Color(0xc5b1ef);
-const LOGO_NOTE_COLOR = new THREE.Color(0xd9c4ff);
-const HOME_NOTE_EMISSIVE = new THREE.Color(0x12081a);
-const LOGO_NOTE_EMISSIVE = new THREE.Color(0x62489a);
+const HOME_NOTE_COLOR = new THREE.Color(0xc8dbff);
+const LOGO_NOTE_COLOR = new THREE.Color(0x153974);
+const HOME_NOTE_EMISSIVE = new THREE.Color(0x0d214b);
+const LOGO_NOTE_EMISSIVE = new THREE.Color(0x1f5bc4);
+const HOME_KEY_LIGHT_COLOR = new THREE.Color(0xd6e9ff);
+const LOGO_KEY_LIGHT_COLOR = new THREE.Color(0xaed0ff);
+const HOME_FILL_LIGHT_COLOR = new THREE.Color(0x4e82ff);
+const LOGO_FILL_LIGHT_COLOR = new THREE.Color(0x88bcff);
+const HOME_RIM_LIGHT_COLOR = new THREE.Color(0x2a59df);
+const LOGO_RIM_LIGHT_COLOR = new THREE.Color(0xb0d8ff);
+const HOME_FRONT_LIGHT_COLOR = new THREE.Color(0x7ba7ff);
+const LOGO_FRONT_LIGHT_COLOR = new THREE.Color(0xd7ebff);
 const LOGO_CLICK_TARGET_SIZE = new THREE.Vector3(8.8, 9.6, 4.4);
 
 type NoteSceneProps = {
@@ -76,12 +84,12 @@ export function NoteScene({
       const environmentRig = createEnvironmentRig(renderer);
       scene.environment = environmentRig.renderTarget.texture;
 
-      const hemiLight = new THREE.HemisphereLight(0xcdbfff, 0x08040f, 0.18);
+      const hemiLight = new THREE.HemisphereLight(0xcfe1ff, 0x020916, 0.2);
       scene.add(hemiLight);
 
       const keyLight = new THREE.SpotLight(
-        0xe2d1ff,
-        16,
+        HOME_KEY_LIGHT_COLOR,
+        15.2,
         42,
         Math.PI / 5,
         0.38,
@@ -91,15 +99,15 @@ export function NoteScene({
       scene.add(keyLight);
       scene.add(keyLight.target);
 
-      const fillLight = new THREE.PointLight(0x8a62ff, 4.8, 0, 2);
+      const fillLight = new THREE.PointLight(HOME_FILL_LIGHT_COLOR, 9.4, 0, 2);
       fillLight.position.set(-5.8, 1.8, 7.2);
       scene.add(fillLight);
 
-      const rimLight = new THREE.PointLight(0x4d2ca0, 3.8, 0, 2);
+      const rimLight = new THREE.PointLight(HOME_RIM_LIGHT_COLOR, 8.1, 0, 2);
       rimLight.position.set(5.1, -1.8, 5.8);
       scene.add(rimLight);
 
-      const frontLight = new THREE.DirectionalLight(0xd9c4ff, 0.85);
+      const frontLight = new THREE.DirectionalLight(HOME_FRONT_LIGHT_COLOR, 1.55);
       frontLight.position.set(-1.2, 1.1, 8.4);
       scene.add(frontLight);
 
@@ -297,26 +305,50 @@ export function NoteScene({
           LOGO_NOTE_EMISSIVE,
           easedLogoProgress
         );
+        keyLight.color.lerpColors(
+          HOME_KEY_LIGHT_COLOR,
+          LOGO_KEY_LIGHT_COLOR,
+          easedLogoProgress
+        );
+        fillLight.color.lerpColors(
+          HOME_FILL_LIGHT_COLOR,
+          LOGO_FILL_LIGHT_COLOR,
+          easedLogoProgress
+        );
+        rimLight.color.lerpColors(
+          HOME_RIM_LIGHT_COLOR,
+          LOGO_RIM_LIGHT_COLOR,
+          easedLogoProgress
+        );
+        frontLight.color.lerpColors(
+          HOME_FRONT_LIGHT_COLOR,
+          LOGO_FRONT_LIGHT_COLOR,
+          easedLogoProgress
+        );
+        keyLight.intensity = THREE.MathUtils.lerp(15.2, 6.8, easedLogoProgress);
+        fillLight.intensity = THREE.MathUtils.lerp(9.4, 4.3, easedLogoProgress);
+        rimLight.intensity = THREE.MathUtils.lerp(8.1, 11.6, easedLogoProgress);
+        frontLight.intensity = THREE.MathUtils.lerp(1.55, 2.35, easedLogoProgress);
         noteMaterial.metalness = THREE.MathUtils.lerp(1, 0.08, easedLogoProgress);
         noteMaterial.roughness = THREE.MathUtils.lerp(
           0.12,
-          0.58,
+          0.22,
           easedLogoProgress
         );
         noteMaterial.envMapIntensity = THREE.MathUtils.lerp(
-          2.6,
-          0.18,
+          3.7,
+          1.1,
           easedLogoProgress
         );
-        noteMaterial.clearcoat = THREE.MathUtils.lerp(0.38, 0.04, easedLogoProgress);
+        noteMaterial.clearcoat = THREE.MathUtils.lerp(0.38, 0.24, easedLogoProgress);
         noteMaterial.clearcoatRoughness = THREE.MathUtils.lerp(
           0.06,
-          0.28,
+          0.08,
           easedLogoProgress
         );
         noteMaterial.emissiveIntensity = THREE.MathUtils.lerp(
-          0.02,
-          0.34,
+          0.08,
+          0.22,
           easedLogoProgress
         );
 
@@ -411,7 +443,7 @@ function createNoteMaterial() {
   return new THREE.MeshPhysicalMaterial({
     color: HOME_NOTE_COLOR.clone(),
     emissive: HOME_NOTE_EMISSIVE.clone(),
-    emissiveIntensity: 0.02,
+    emissiveIntensity: 0.08,
     metalness: 1,
     roughness: 0.12,
     envMapIntensity: 2.6,
@@ -523,25 +555,25 @@ function screenToWorldOnPlane(
 function createEnvironmentRig(renderer: THREE.WebGLRenderer) {
   const pmremGenerator = new THREE.PMREMGenerator(renderer);
   const environmentScene = new THREE.Scene();
-  environmentScene.background = new THREE.Color(0x04020a);
+  environmentScene.background = new THREE.Color(0x04112b);
 
   const shell = new THREE.Mesh(
     new THREE.SphereGeometry(24, 48, 48),
-    new THREE.MeshBasicMaterial({ color: 0x090411, side: THREE.BackSide })
+    new THREE.MeshBasicMaterial({ color: 0x081738, side: THREE.BackSide })
   );
   environmentScene.add(shell);
 
-  environmentScene.add(new THREE.AmbientLight(0x261238, 0.16));
+  environmentScene.add(new THREE.AmbientLight(0x173a7a, 0.22));
 
-  const key = new THREE.PointLight(0xf5eeff, 9, 0, 2);
+  const key = new THREE.PointLight(0xd9ebff, 8.6, 0, 2);
   key.position.set(5.8, 3.6, 7.6);
   environmentScene.add(key);
 
-  const violet = new THREE.PointLight(0x9d7aff, 6.2, 0, 2);
-  violet.position.set(-6.4, 2.2, 5.8);
-  environmentScene.add(violet);
+  const blue = new THREE.PointLight(0x5b8bff, 11.4, 0, 2);
+  blue.position.set(-6.4, 2.2, 5.8);
+  environmentScene.add(blue);
 
-  const back = new THREE.PointLight(0x3b1d5b, 4.6, 0, 2);
+  const back = new THREE.PointLight(0x2357cc, 8.4, 0, 2);
   back.position.set(0, -6, -8);
   environmentScene.add(back);
 
@@ -568,31 +600,40 @@ function createEnvOrb(
 function createGlowBodies(texture: THREE.Texture) {
   return [
     createGlowBody(texture, {
-      color: 0x9a74ff,
-      opacity: 0.11,
-      scale: 8.4,
+      color: 0x4f8bff,
+      opacity: 0.22,
+      scale: 10.4,
       position: [-4.6, 2.4, -5.1],
-      envRadius: 1.4,
+      envRadius: 1.8,
       velocity: [0.28, 0.19, 0.08],
       bounds: [5.4, 3.3, 1.4],
     }),
     createGlowBody(texture, {
-      color: 0x7440d6,
-      opacity: 0.14,
-      scale: 6.8,
+      color: 0x245df3,
+      opacity: 0.24,
+      scale: 8.8,
       position: [4.9, -2.1, -5.4],
-      envRadius: 1.15,
+      envRadius: 1.6,
       velocity: [-0.24, 0.26, -0.06],
       bounds: [5.8, 3.5, 1.6],
     }),
     createGlowBody(texture, {
-      color: 0xc9b1ff,
-      opacity: 0.07,
-      scale: 9.8,
+      color: 0x88b1ff,
+      opacity: 0.14,
+      scale: 11.6,
       position: [0.2, 0.6, -5.8],
-      envRadius: 1.7,
+      envRadius: 1.9,
       velocity: [0.18, -0.22, 0.05],
       bounds: [4.8, 3.9, 1.2],
+    }),
+    createGlowBody(texture, {
+      color: 0x2f74ff,
+      opacity: 0.16,
+      scale: 9.4,
+      position: [2.7, 2.8, -5.3],
+      envRadius: 1.55,
+      velocity: [-0.2, -0.18, 0.06],
+      bounds: [4.9, 3.2, 1.5],
     }),
   ];
 }

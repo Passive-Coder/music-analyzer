@@ -21,8 +21,8 @@ const RING_CONFIGS: RingConfig[] = [
   {
     amplitude: 2.8,
     baseRadius: 28,
-    color: "rgba(214, 192, 255, 0.95)",
-    fillColor: "rgba(214, 192, 255, 0.12)",
+    color: "rgba(214, 232, 255, 0.96)",
+    fillColor: "rgba(214, 232, 255, 0.14)",
     frequency: 5,
     phase: 0.1,
     speed: 0.0015,
@@ -31,8 +31,8 @@ const RING_CONFIGS: RingConfig[] = [
   {
     amplitude: 3.8,
     baseRadius: 34,
-    color: "rgba(176, 132, 255, 0.8)",
-    fillColor: "rgba(176, 132, 255, 0.12)",
+    color: "rgba(118, 168, 255, 0.9)",
+    fillColor: "rgba(118, 168, 255, 0.16)",
     frequency: 6,
     phase: 1.4,
     speed: 0.0012,
@@ -41,8 +41,8 @@ const RING_CONFIGS: RingConfig[] = [
   {
     amplitude: 4.8,
     baseRadius: 41,
-    color: "rgba(142, 94, 255, 0.66)",
-    fillColor: "rgba(142, 94, 255, 0.1)",
+    color: "rgba(62, 122, 255, 0.82)",
+    fillColor: "rgba(62, 122, 255, 0.14)",
     frequency: 7,
     phase: 2.2,
     speed: 0.001,
@@ -51,8 +51,8 @@ const RING_CONFIGS: RingConfig[] = [
   {
     amplitude: 5.8,
     baseRadius: 49,
-    color: "rgba(102, 62, 214, 0.5)",
-    fillColor: "rgba(102, 62, 214, 0.1)",
+    color: "rgba(24, 82, 255, 0.72)",
+    fillColor: "rgba(24, 82, 255, 0.12)",
     frequency: 8,
     phase: 3.4,
     speed: 0.00085,

@@ -1,10 +1,10 @@
 import { NextResponse } from "next/server";
 
 import {
-  fetchSpotifyPlaylist,
-  SpotifyApiError,
-  SpotifyConfigError,
-} from "@/lib/spotify";
+  fetchYouTubePlaylist,
+  YouTubeApiError,
+  YouTubeConfigError,
+} from "@/lib/youtube";
 
 export async function POST(request: Request) {
   try {
@@ -14,11 +14,11 @@ export async function POST(request: Request) {
     const playlistUrl =
       typeof payload.playlistUrl === "string" ? payload.playlistUrl : "";
 
-    const playlist = await fetchSpotifyPlaylist(playlistUrl);
+    const playlist = await fetchYouTubePlaylist(playlistUrl);
 
     return NextResponse.json({ playlist });
   } catch (error) {
-    if (error instanceof SpotifyConfigError) {
+    if (error instanceof YouTubeConfigError) {
       return NextResponse.json(
         { error: error.message },
         {
@@ -27,7 +27,7 @@ export async function POST(request: Request) {
       );
     }
 
-    if (error instanceof SpotifyApiError) {
+    if (error instanceof YouTubeApiError) {
       const status =
         error.status === 401 || error.status === 403 ? 502 : error.status;
 
@@ -35,7 +35,7 @@ export async function POST(request: Request) {
         {
           error:
             error.status === 401 || error.status === 403
-              ? "Spotify rejected the playlist lookup. Use a public playlist or configure a valid Spotify access token."
+              ? "YouTube rejected the playlist lookup. Use a public playlist and a valid YouTube Data API key."
               : error.message,
         },
         {

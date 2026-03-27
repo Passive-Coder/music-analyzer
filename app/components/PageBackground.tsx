@@ -12,6 +12,10 @@ type BlobConfig = {
   pulseRange: number;
 };
 
+type PageBackgroundProps = {
+  isPlaylistMode?: boolean;
+};
+
 const BACKGROUND_MOTION_MULTIPLIER = 2;
 
 const BLOB_CONFIGS: BlobConfig[] = [
@@ -89,7 +93,9 @@ const BLOB_CONFIGS: BlobConfig[] = [
   },
 ];
 
-export function PageBackground() {
+export function PageBackground({
+  isPlaylistMode = false,
+}: PageBackgroundProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const blobRefs = useRef<Array<HTMLDivElement | null>>([]);
 
@@ -185,7 +191,13 @@ export function PageBackground() {
   }, []);
 
   return (
-    <div ref={containerRef} className="page-background" aria-hidden="true">
+    <div
+      ref={containerRef}
+      className={`page-background${isPlaylistMode ? " is-playlist" : ""}`}
+      aria-hidden="true"
+    >
+      <div className="page-background__base page-background__base--playlist" />
+      <div className="page-background__veil" />
       {BLOB_CONFIGS.map((config, index) => (
         <div
           key={config.className}
