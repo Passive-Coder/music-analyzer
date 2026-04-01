@@ -193,7 +193,7 @@ export async function fetchLyrics(title: string, artist: string, duration?: numb
     });
 
     // Try with duration first (most precise)
-    const urlWithDuration = `${baseUrl}?${params.toString()}&duration=${Math.round(duration)}`;
+    const urlWithDuration = `${baseUrl}?${params.toString()}&duration=${Math.round(duration ?? 0)}`;
     const response = await fetch(urlWithDuration, {
       headers: { "User-Agent": "MusicAnalyzerClient/0.1.0" }
     });
