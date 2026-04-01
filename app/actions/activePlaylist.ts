@@ -24,7 +24,7 @@ export async function syncActivePlaylistPlaybackAction(code: string) {
       { url: getConvexDeploymentUrl() }
     );
 
-    return { ok: true as const, result: result as ActivePlaylistState };
+    return { ok: true as const, result: result as ActivePlaylistState | null };
   } catch (error) {
     return {
       error:

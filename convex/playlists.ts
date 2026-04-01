@@ -23,9 +23,14 @@ type VoterSelection = {
   songId: string;
 };
 
-type PublishedPlaylistDocument = Omit<PublishedPlaylistRecord, "publisherEmail"> & {
+type PublishedPlaylistDocument = Omit<
+  PublishedPlaylistRecord,
+  "publisherEmail" | "currentSong" | "currentSongStartedAt"
+> & {
   _id: Id<"publishedPlaylists">;
   creatorToken: string;
+  currentSong?: PlaylistSong | null;
+  currentSongStartedAt?: string | null;
   publisherEmail?: string | null;
 };
 
@@ -34,6 +39,7 @@ type ActivePlaylistDocument = {
   code: string;
   currentBatch: PlaylistSong[];
   currentBatchIndex: number;
+  currentSong?: PlaylistSong | null;
   currentSongId?: string | null;
   currentSongStartedAt?: string | null;
   songList: ActivePlaylistSongVote[];
@@ -76,21 +82,37 @@ type PlaylistPatchContext = {
   };
 };
 
+type PlaylistDeleteContext = {
+  db: {
+    delete: <TableName extends "publishedPlaylists" | "activePlaylists">(
+      id: Id<TableName>
+    ) => Promise<unknown>;
+  };
+};
+
 export const publishPlaylist = mutation({
   args: {
     batchSongs: v.array(playlistSongValidator),
     currentBatchIndex: v.number(),
+    initialSongId: v.optional(v.union(v.string(), v.null())),
     librarySongs: v.array(playlistSongValidator),
     loadedPlaylists: v.array(playlistDataValidator),
     publisherEmail: v.string(),
   },
   handler: async (ctx, args) => {
+    await deletePublisherSessions(ctx, args.publisherEmail);
+
     const batches = chunkSongs(args.batchSongs, BATCH_SIZE);
     const clampedBatchIndex = clampCurrentBatchIndex(
       args.currentBatchIndex,
       batches.length
     );
-    const currentBatch = batches[clampedBatchIndex] ?? [];
+    const initialSong =
+      args.librarySongs.find((song) => song.id === args.initialSongId) ??
+      batches[clampedBatchIndex]?.[0] ??
+      null;
+    const currentBatchIndex = clampedBatchIndex;
+    const currentBatch = batches[currentBatchIndex] ?? [];
     const now = new Date().toISOString();
     const code = await createUniqueAlphabeticCode(ctx);
     const creatorToken = createAlphabeticCode(CREATOR_TOKEN_LENGTH);
@@ -100,8 +122,10 @@ export const publishPlaylist = mutation({
       code,
       createdAt: now,
       creatorToken,
+      currentSong: initialSong,
+      currentSongStartedAt: initialSong ? now : null,
       currentBatch,
-      currentBatchIndex: clampedBatchIndex,
+      currentBatchIndex,
       librarySongs: args.librarySongs,
       loadedPlaylists: args.loadedPlaylists,
       publisherEmail: args.publisherEmail,
@@ -260,9 +284,19 @@ export const voteForActivePlaylistSong = mutation({
     songId: v.string(),
   },
   handler: async (ctx, args) => {
-    const published = await getPlaylistByCodeOrThrow(ctx, args.code);
+    const published = await getPlaylistByCode(ctx, args.code);
+
+    if (!published) {
+      throw new Error("This music session is no longer available.");
+    }
+
     const active = await ensureActivePlaylistByCode(ctx, published, new Date().toISOString());
     const synced = syncActivePlaybackState(published, active, Date.now());
+
+    if (isSessionComplete(synced.published, synced.active)) {
+      await deletePlaylistSession(ctx, synced.published.code);
+      throw new Error("This music session has ended.");
+    }
 
     if (synced.changed) {
       await patchSyncedPlaylistState(ctx, synced.published, synced.active);
@@ -272,14 +306,6 @@ export const voteForActivePlaylistSong = mutation({
 
     if (!currentBatchSongIds.has(args.songId)) {
       throw new Error("That song is not in the current voting batch.");
-    }
-
-    if (synced.active.currentSongId === args.songId) {
-      throw new Error("The song that is currently playing cannot be voted on.");
-    }
-
-    if (synced.published.songsPlayedBefore.some((song) => song.id === args.songId)) {
-      throw new Error("That song has already been played.");
     }
 
     const previousSelection = synced.active.voterSelections.find(
@@ -341,9 +367,19 @@ export const syncActivePlaylistPlayback = mutation({
     code: v.string(),
   },
   handler: async (ctx, args) => {
-    const published = await getPlaylistByCodeOrThrow(ctx, args.code);
+    const published = await getPlaylistByCode(ctx, args.code);
+
+    if (!published) {
+      return null;
+    }
+
     const active = await ensureActivePlaylistByCode(ctx, published, new Date().toISOString());
     const synced = syncActivePlaybackState(published, active, Date.now());
+
+    if (isSessionComplete(synced.published, synced.active)) {
+      await deletePlaylistSession(ctx, synced.published.code);
+      return null;
+    }
 
     if (synced.changed) {
       await patchSyncedPlaylistState(ctx, synced.published, synced.active);
@@ -358,7 +394,12 @@ export const getActivePlaylistState = query({
     code: v.string(),
   },
   handler: async (ctx, args) => {
-    const published = await getPlaylistByCodeOrThrow(ctx, args.code);
+    const published = await getPlaylistByCode(ctx, args.code);
+
+    if (!published) {
+      return null;
+    }
+
     const active = await getActivePlaylistByCode(ctx, args.code);
 
     if (!active) {
@@ -397,51 +438,69 @@ export const advanceCurrentBatch = mutation({
   handler: async (ctx, args) => {
     const document = await getAuthorizedPlaylist(ctx, args.code, args.creatorToken);
     const active = await ensureActivePlaylistByCode(ctx, document, new Date().toISOString());
-    const nextBatchIndex = Math.min(
-      document.currentBatchIndex + 1,
-      document.batches.length
-    );
+    const synced = syncActivePlaybackState(document, active, Date.now());
 
-    if (nextBatchIndex === document.currentBatchIndex) {
-      return toPublicRecord(document);
+    if (isSessionComplete(synced.published, synced.active)) {
+      await deletePlaylistSession(ctx, synced.published.code);
+      throw new Error("This music session has ended.");
     }
 
-    const playedSongs =
-      document.currentBatch.length > 0
-        ? [...document.songsPlayedBefore, ...document.currentBatch]
-        : document.songsPlayedBefore;
-    const nextCurrentBatch = document.batches[nextBatchIndex] ?? [];
-    const updatedDocument = {
-      ...document,
+    if (synced.changed) {
+      await patchSyncedPlaylistState(ctx, synced.published, synced.active);
+    }
+
+    const nowIso = new Date().toISOString();
+    const nextPlayedSongs =
+      synced.active.currentSong &&
+      !synced.published.songsPlayedBefore.some(
+        (song) => song.id === synced.active.currentSong?.id
+      )
+        ? [...synced.published.songsPlayedBefore, synced.active.currentSong]
+        : [...synced.published.songsPlayedBefore];
+
+    if (!synced.published.currentBatch.length) {
+      await deletePlaylistSession(ctx, synced.published.code);
+      throw new Error("This music session has ended.");
+    }
+
+    const nextSong = chooseNextSong(
+      synced.published.currentBatch,
+      synced.published.currentBatch,
+      buildSongListFromVoteSnapshot(
+        synced.published.currentBatch,
+        synced.published.songwiseVote
+      )
+    );
+    const nextBatchIndex = Math.min(
+      synced.published.currentBatchIndex + 1,
+      synced.published.batches.length
+    );
+    const nextCurrentBatch = synced.published.batches[nextBatchIndex] ?? [];
+    const updatedPublished = {
+      ...synced.published,
+      currentSong: nextSong,
+      currentSongStartedAt: nowIso,
       currentBatch: nextCurrentBatch,
       currentBatchIndex: nextBatchIndex,
-      songsPlayedBefore: playedSongs,
+      songsPlayedBefore: nextPlayedSongs,
       songwiseVote: createVoteSnapshot(nextCurrentBatch),
-      updatedAt: new Date().toISOString(),
+      updatedAt: nowIso,
+    };
+    const updatedActive = {
+      ...synced.active,
+      currentSong: nextSong,
+      currentSongId: nextSong.id,
+      currentSongStartedAt: nowIso,
+      currentBatch: nextCurrentBatch,
+      currentBatchIndex: nextBatchIndex,
+      songList: buildActiveSongList(nextCurrentBatch),
+      songsPlayedBefore: nextPlayedSongs,
+      updatedAt: nowIso,
+      voterSelections: [],
     };
 
-    await ctx.db.patch(document._id, {
-      currentBatch: updatedDocument.currentBatch,
-      currentBatchIndex: updatedDocument.currentBatchIndex,
-      songsPlayedBefore: updatedDocument.songsPlayedBefore,
-      songwiseVote: updatedDocument.songwiseVote,
-      updatedAt: updatedDocument.updatedAt,
-    });
-
-    await ctx.db.patch(active._id, {
-      currentBatch: nextCurrentBatch,
-      currentBatchIndex: nextBatchIndex,
-      currentSongId: nextCurrentBatch[0]?.id ?? null,
-      currentSongStartedAt: nextCurrentBatch[0]
-        ? new Date().toISOString()
-        : null,
-      songList: buildActiveSongList(nextCurrentBatch),
-      songsPlayedBefore: playedSongs,
-      updatedAt: updatedDocument.updatedAt,
-      voterSelections: [],
-    });
-
-    return toPublicRecord(updatedDocument);
+    await patchSyncedPlaylistState(ctx, updatedPublished, updatedActive);
+    return toPublicRecord(updatedPublished);
   },
 });
 
@@ -450,8 +509,45 @@ export const getPublishedPlaylist = query({
     code: v.string(),
   },
   handler: async (ctx, args) => {
-    const document = await getPlaylistByCodeOrThrow(ctx, args.code);
-    return toPublicRecord(document);
+    const document = await getPlaylistByCode(ctx, args.code);
+    return document ? toPublicRecord(document) : null;
+  },
+});
+
+export const getOwnedPublishedPlaylist = query({
+  args: {
+    publisherEmail: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const normalizedEmail = args.publisherEmail.trim().toLowerCase();
+    const document = (
+      (await ctx.db.query("publishedPlaylists").collect()) as PublishedPlaylistDocument[]
+    )
+      .filter(
+        (entry) => entry.publisherEmail?.trim().toLowerCase() === normalizedEmail
+      )
+      .sort((left, right) => right.createdAt.localeCompare(left.createdAt))[0];
+
+    if (!document) {
+      return null;
+    }
+
+    return {
+      creatorToken: document.creatorToken,
+      record: toPublicRecord(document),
+    };
+  },
+});
+
+export const abortPublishedPlaylist = mutation({
+  args: {
+    code: v.string(),
+    creatorToken: v.string(),
+  },
+  handler: async (ctx, args) => {
+    await getAuthorizedPlaylist(ctx, args.code, args.creatorToken);
+    await deletePlaylistSession(ctx, args.code);
+    return { ok: true };
   },
 });
 
@@ -492,6 +588,17 @@ function buildActiveSongList(currentBatch: PlaylistSong[]) {
     songId: song.id,
     songName: song.title,
     vote: 0,
+  }));
+}
+
+function buildSongListFromVoteSnapshot(
+  currentBatch: PlaylistSong[],
+  songwiseVote: SongwiseVote[]
+) {
+  return currentBatch.map((song, songIndex) => ({
+    songId: song.id,
+    songName: song.title,
+    vote: songwiseVote[songIndex]?.[String(songIndex + 1)] ?? 0,
   }));
 }
 
@@ -537,14 +644,23 @@ async function getAuthorizedPlaylist(
   return document;
 }
 
-async function getPlaylistByCodeOrThrow(
+async function getPlaylistByCode(
   ctx: PublishedPlaylistLookupContext,
   code: string
-): Promise<PublishedPlaylistDocument> {
+): Promise<PublishedPlaylistDocument | null> {
   const normalizedCode = normalizeCode(code);
   const document = (
     (await ctx.db.query("publishedPlaylists").collect()) as PublishedPlaylistDocument[]
   ).find((entry) => entry.code === normalizedCode);
+
+  return document ?? null;
+}
+
+async function getPlaylistByCodeOrThrow(
+  ctx: PublishedPlaylistLookupContext,
+  code: string
+): Promise<PublishedPlaylistDocument> {
+  const document = await getPlaylistByCode(ctx, code);
 
   if (!document) {
     throw new Error("That playlist code could not be found.");
@@ -585,6 +701,38 @@ async function ensureActivePlaylistByCode(
   };
 }
 
+async function deletePublisherSessions(
+  ctx: PublishedPlaylistLookupContext & ActivePlaylistLookupContext & PlaylistDeleteContext,
+  publisherEmail: string
+) {
+  const normalizedEmail = publisherEmail.trim().toLowerCase();
+  const sessions = (
+    (await ctx.db.query("publishedPlaylists").collect()) as PublishedPlaylistDocument[]
+  ).filter(
+    (entry) => entry.publisherEmail?.trim().toLowerCase() === normalizedEmail
+  );
+
+  for (const session of sessions) {
+    await deletePlaylistSession(ctx, session.code);
+  }
+}
+
+async function deletePlaylistSession(
+  ctx: PublishedPlaylistLookupContext & ActivePlaylistLookupContext & PlaylistDeleteContext,
+  code: string
+) {
+  const published = await getPlaylistByCode(ctx, code);
+  const active = await getActivePlaylistByCode(ctx, code);
+
+  if (active) {
+    await ctx.db.delete(active._id);
+  }
+
+  if (published) {
+    await ctx.db.delete(published._id);
+  }
+}
+
 function normalizeCode(code: string) {
   return code.trim().toUpperCase();
 }
@@ -593,6 +741,8 @@ function buildActivePlaylistSeed(
   published: Pick<
     PublishedPlaylistDocument,
     | "code"
+    | "currentSong"
+    | "currentSongStartedAt"
     | "currentBatch"
     | "currentBatchIndex"
     | "songsPlayedBefore"
@@ -600,12 +750,17 @@ function buildActivePlaylistSeed(
   >,
   nowIso: string
 ): ActivePlaylistSeed {
+  const currentSong = published.currentSong ?? published.currentBatch[0] ?? null;
+  const currentSongStartedAt =
+    published.currentSongStartedAt ?? (currentSong ? nowIso : null);
+
   return {
     code: published.code,
     currentBatch: published.currentBatch,
     currentBatchIndex: published.currentBatchIndex,
-    currentSongId: published.currentBatch[0]?.id ?? null,
-    currentSongStartedAt: published.currentBatch[0] ? nowIso : null,
+    currentSong,
+    currentSongId: currentSong?.id ?? null,
+    currentSongStartedAt,
     songList: buildActiveSongList(published.currentBatch),
     songsPlayedBefore: published.songsPlayedBefore,
     updatedAt: published.updatedAt ?? nowIso,
@@ -617,6 +772,8 @@ function buildTransientActivePlaylist(
   published: Pick<
     PublishedPlaylistDocument,
     | "code"
+    | "currentSong"
+    | "currentSongStartedAt"
     | "currentBatch"
     | "currentBatchIndex"
     | "songsPlayedBefore"
@@ -637,7 +794,9 @@ function syncActivePlaybackState(
   let changed = false;
   let nextPublished: PublishedPlaylistDocument = {
     ...published,
+    currentSong: published.currentSong ? { ...published.currentSong } : null,
     currentBatch: [...published.currentBatch],
+    currentSongStartedAt: published.currentSongStartedAt ?? null,
     songsPlayedBefore: [...published.songsPlayedBefore],
     songwiseVote: [...published.songwiseVote],
   };
@@ -645,6 +804,7 @@ function syncActivePlaybackState(
     ...active,
     currentBatch: [...active.currentBatch],
     currentBatchIndex: active.currentBatchIndex,
+    currentSong: active.currentSong ? { ...active.currentSong } : null,
     currentSongId: active.currentSongId ?? null,
     currentSongStartedAt: active.currentSongStartedAt ?? null,
     songList: active.songList.map((entry) => ({ ...entry })),
@@ -691,14 +851,101 @@ function syncActivePlaybackState(
     }
   };
 
+  const resolveCurrentSong = () => {
+    if (nextActive.currentSong && nextActive.currentSongId === nextActive.currentSong.id) {
+      return nextActive.currentSong;
+    }
+
+    if (nextActive.currentSongId) {
+      const songFromBatch =
+        nextActive.currentBatch.find((song) => song.id === nextActive.currentSongId) ?? null;
+
+      if (songFromBatch) {
+        return songFromBatch;
+      }
+
+      return (
+        nextActive.songsPlayedBefore.find((song) => song.id === nextActive.currentSongId) ??
+        null
+      );
+    }
+
+    return null;
+  };
+
+  const advanceVotingBatch = (nowIso: string) => {
+    const nextBatchIndex = Math.min(
+      nextPublished.currentBatchIndex + 1,
+      nextPublished.batches.length
+    );
+    const nextBatch = nextPublished.batches[nextBatchIndex] ?? [];
+
+    nextPublished = {
+      ...nextPublished,
+      currentBatch: nextBatch,
+      currentBatchIndex: nextBatchIndex,
+      songwiseVote: createVoteSnapshot(nextBatch),
+    };
+    nextActive = {
+      ...nextActive,
+      currentBatch: [...nextBatch],
+      currentBatchIndex: nextBatchIndex,
+      songList: buildActiveSongList(nextBatch),
+      voterSelections: [],
+      updatedAt: nowIso,
+    };
+    changed = true;
+  };
+
   while (true) {
     syncActiveCollectionsFromPublished();
     ensureSongListMatchesCurrentBatch();
 
-    if (!nextPublished.currentBatch.length) {
+    let currentSong = resolveCurrentSong();
+    const unresolvedCurrentSong = currentSong;
+
+    if (
+      unresolvedCurrentSong &&
+      !nextActive.currentSong &&
+      nextPublished.currentBatch.some((song) => song.id === unresolvedCurrentSong.id)
+    ) {
+      const currentSongStartedAt =
+        nextActive.currentSongStartedAt ?? new Date(nowMs).toISOString();
+
+      nextActive = {
+        ...nextActive,
+        currentSong: unresolvedCurrentSong,
+        currentSongId: unresolvedCurrentSong.id,
+        currentSongStartedAt,
+      };
+      advanceVotingBatch(currentSongStartedAt);
+      currentSong = resolveCurrentSong();
+    }
+
+    if (!currentSong && nextPublished.currentBatch.length) {
+      currentSong = chooseNextSong(
+        nextPublished.currentBatch,
+        nextPublished.currentBatch,
+        nextActive.songList
+      );
+      const currentSongStartedAt = new Date(nowMs).toISOString();
+
+      nextActive = {
+        ...nextActive,
+        currentSong,
+        currentSongId: currentSong.id,
+        currentSongStartedAt,
+      };
+      advanceVotingBatch(currentSongStartedAt);
+    }
+
+    currentSong = resolveCurrentSong();
+
+    if (!currentSong) {
       if (
         nextActive.currentBatch.length > 0 ||
         nextActive.currentBatchIndex !== nextPublished.currentBatchIndex ||
+        nextActive.currentSong !== null ||
         nextActive.currentSongId !== null ||
         nextActive.currentSongStartedAt !== null ||
         nextActive.songList.length > 0 ||
@@ -709,6 +956,7 @@ function syncActivePlaybackState(
           ...nextActive,
           currentBatch: [],
           currentBatchIndex: nextPublished.currentBatchIndex,
+          currentSong: null,
           currentSongId: null,
           currentSongStartedAt: null,
           songList: [],
@@ -721,30 +969,10 @@ function syncActivePlaybackState(
       break;
     }
 
-    let currentSong =
-      nextActive.currentBatch.find((song) => song.id === nextActive.currentSongId) ??
-      null;
-
-    if (!currentSong) {
-      currentSong = nextActive.currentBatch[0] ?? null;
-
-      if (!currentSong) {
-        break;
-      }
-
-      nextActive = {
-        ...nextActive,
-        currentSongId: currentSong.id,
-        currentSongStartedAt: new Date(nowMs).toISOString(),
-        songList: buildActiveSongList(nextActive.currentBatch),
-        voterSelections: [],
-      };
-      changed = true;
-    }
-
     if (!nextActive.currentSongStartedAt) {
       nextActive = {
         ...nextActive,
+        currentSong,
         currentSongStartedAt: new Date(nowMs).toISOString(),
       };
       changed = true;
@@ -770,62 +998,54 @@ function syncActivePlaybackState(
       changed = true;
     }
 
-    const playedSongIds = new Set(
-      nextPublished.songsPlayedBefore.map((song) => song.id)
-    );
-    const remainingSongs = nextPublished.currentBatch.filter(
-      (song) => !playedSongIds.has(song.id)
-    );
     const nextSongStartAt = new Date(currentSongEndMs).toISOString();
 
-    if (remainingSongs.length > 0) {
+    if (nextPublished.currentBatch.length > 0) {
       const nextSong = chooseNextSong(
         nextPublished.currentBatch,
-        remainingSongs,
+        nextPublished.currentBatch,
         nextActive.songList
       );
 
       nextActive = {
         ...nextActive,
+        currentSong: nextSong,
         currentSongId: nextSong.id,
         currentSongStartedAt: nextSongStartAt,
-        currentBatch: [...nextPublished.currentBatch],
-        currentBatchIndex: nextPublished.currentBatchIndex,
-        songList: buildActiveSongList(nextPublished.currentBatch),
         songsPlayedBefore: [...nextPublished.songsPlayedBefore],
-        voterSelections: [],
       };
+      advanceVotingBatch(nextSongStartAt);
       changed = true;
       continue;
     }
 
-    const nextBatchIndex = Math.min(
-      nextPublished.currentBatchIndex + 1,
-      nextPublished.batches.length
-    );
-    const nextBatch = nextPublished.batches[nextBatchIndex] ?? [];
-
-    nextPublished = {
-      ...nextPublished,
-      currentBatch: nextBatch,
-      currentBatchIndex: nextBatchIndex,
-      songwiseVote: createVoteSnapshot(nextBatch),
-    };
     nextActive = {
       ...nextActive,
-      currentBatch: nextBatch,
-      currentBatchIndex: nextBatchIndex,
-      currentSongId: nextBatch[0]?.id ?? null,
-      currentSongStartedAt: nextBatch[0] ? nextSongStartAt : null,
-      songList: buildActiveSongList(nextBatch),
+      currentSong: null,
+      currentSongId: null,
+      currentSongStartedAt: null,
       songsPlayedBefore: [...nextPublished.songsPlayedBefore],
-      voterSelections: [],
     };
     changed = true;
+    break;
+  }
 
-    if (!nextBatch.length) {
-      break;
-    }
+  const publishedCurrentSong = resolveCurrentSong();
+  const publishedCurrentSongId = nextPublished.currentSong?.id ?? null;
+  const resolvedCurrentSongId = publishedCurrentSong?.id ?? null;
+  const publishedCurrentSongStartedAt = nextPublished.currentSongStartedAt ?? null;
+  const resolvedCurrentSongStartedAt = nextActive.currentSongStartedAt ?? null;
+
+  if (
+    publishedCurrentSongId !== resolvedCurrentSongId ||
+    publishedCurrentSongStartedAt !== resolvedCurrentSongStartedAt
+  ) {
+    nextPublished = {
+      ...nextPublished,
+      currentSong: publishedCurrentSong ? { ...publishedCurrentSong } : null,
+      currentSongStartedAt: resolvedCurrentSongStartedAt,
+    };
+    changed = true;
   }
 
   if (changed) {
@@ -853,6 +1073,8 @@ async function patchSyncedPlaylistState(
   active: ActivePlaylistDocument
 ) {
   await ctx.db.patch(published._id, {
+    currentSong: published.currentSong ?? null,
+    currentSongStartedAt: published.currentSongStartedAt ?? null,
     currentBatch: published.currentBatch,
     currentBatchIndex: published.currentBatchIndex,
     songsPlayedBefore: published.songsPlayedBefore,
@@ -863,6 +1085,7 @@ async function patchSyncedPlaylistState(
   await ctx.db.patch(active._id, {
     currentBatch: active.currentBatch,
     currentBatchIndex: active.currentBatchIndex,
+    currentSong: active.currentSong ?? null,
     currentSongId: active.currentSongId ?? null,
     currentSongStartedAt: active.currentSongStartedAt ?? null,
     songList: active.songList,
@@ -879,22 +1102,45 @@ function chooseNextSong(
 ) {
   const remainingIds = new Set(remainingSongs.map((song) => song.id));
   const voteMap = new Map(votes.map((vote) => [vote.songId, vote.vote]));
+  const candidates = batch.filter((song) => remainingIds.has(song.id));
 
-  return batch
-    .filter((song) => remainingIds.has(song.id))
-    .sort((leftSong, rightSong) => {
-      const rightVote = voteMap.get(rightSong.id) ?? 0;
-      const leftVote = voteMap.get(leftSong.id) ?? 0;
+  if (!candidates.length) {
+    throw new Error("A next song could not be chosen from the batch.");
+  }
 
-      if (rightVote !== leftVote) {
-        return rightVote - leftVote;
-      }
+  let topVote = -Infinity;
+  let topCandidates: PlaylistSong[] = [];
 
-      return (
-        batch.findIndex((song) => song.id === leftSong.id) -
-        batch.findIndex((song) => song.id === rightSong.id)
-      );
-    })[0];
+  for (const song of candidates) {
+    const vote = voteMap.get(song.id) ?? 0;
+
+    if (vote > topVote) {
+      topVote = vote;
+      topCandidates = [song];
+      continue;
+    }
+
+    if (vote === topVote) {
+      topCandidates.push(song);
+    }
+  }
+
+  return topCandidates[Math.floor(Math.random() * topCandidates.length)];
+}
+
+function isSessionComplete(
+  published: Pick<
+    PublishedPlaylistDocument,
+    "batches" | "currentBatch" | "currentBatchIndex" | "currentSong"
+  >,
+  active: Pick<ActivePlaylistDocument, "currentSongId">
+) {
+  return (
+    published.currentSong === null &&
+    active.currentSongId === null &&
+    published.currentBatch.length === 0 &&
+    published.currentBatchIndex >= published.batches.length
+  );
 }
 
 function toActivePlaylistState(
@@ -906,7 +1152,10 @@ function toActivePlaylistState(
     currentBatch: active.currentBatch,
     currentBatchIndex: active.currentBatchIndex,
     currentSong:
-      active.currentBatch.find((song) => song.id === active.currentSongId) ?? null,
+      active.currentSong ??
+      active.currentBatch.find((song) => song.id === active.currentSongId) ??
+      active.songsPlayedBefore.find((song) => song.id === active.currentSongId) ??
+      null,
     currentSongId: active.currentSongId ?? null,
     currentSongStartedAt: active.currentSongStartedAt ?? null,
     playedSongs: active.songsPlayedBefore,
@@ -919,6 +1168,8 @@ function toPublicRecord(document: {
   batches: PlaylistSong[][];
   code: string;
   createdAt: string;
+  currentSong?: PlaylistSong | null;
+  currentSongStartedAt?: string | null;
   currentBatch: PlaylistSong[];
   currentBatchIndex: number;
   librarySongs: PlaylistSong[];
@@ -932,6 +1183,8 @@ function toPublicRecord(document: {
     batches: document.batches,
     code: document.code,
     createdAt: document.createdAt,
+    currentSong: document.currentSong ?? null,
+    currentSongStartedAt: document.currentSongStartedAt ?? null,
     currentBatch: document.currentBatch,
     currentBatchIndex: document.currentBatchIndex,
     librarySongs: document.librarySongs,

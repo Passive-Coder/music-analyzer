@@ -4,9 +4,9 @@
 import {
   useEffect,
   useMemo,
-  useRef,
   useState,
   type CSSProperties,
+  useRef,
   type MutableRefObject,
 } from "react";
 
@@ -15,7 +15,12 @@ import {
   syncActivePlaylistPlaybackAction,
   voteForActivePlaylistSongAction,
 } from "@/app/actions/activePlaylist";
-import type { ActivePlaylistState, PlaylistSong } from "@/lib/playlist-types";
+import { SubwooferScene } from "@/app/components/SubwooferScene";
+import type {
+  ActivePlaylistSongVote,
+  ActivePlaylistState,
+  PlaylistSong,
+} from "@/lib/playlist-types";
 import { getConvexBrowserClient } from "@/lib/convex-browser-client";
 import { api } from "@/convex/_generated/api";
 
@@ -37,6 +42,13 @@ const BLACK_PIANO_KEYS = [
   { afterIndex: 1, label: "D#" },
   { afterIndex: 3, label: "F#" },
 ] as const;
+type PreviousResultSnapshot = {
+  batch: PlaylistSong[];
+  code: string | null;
+  endedMessage: string;
+  songList: ActivePlaylistSongVote[];
+  topSongIds: string[];
+};
 
 export function VoteSongWorkspace({
   defaultCode = null,
@@ -59,11 +71,21 @@ export function VoteSongWorkspace({
   });
   const [viewerId, setViewerId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [previousResult, setPreviousResult] =
+    useState<PreviousResultSnapshot | null>(null);
   const [pressedKeyId, setPressedKeyId] = useState<string | null>(null);
+  const [pressedBlackKeyId, setPressedBlackKeyId] = useState<string | null>(null);
+  const [resultsViewStage, setResultsViewStage] = useState<
+    "hidden" | "entering" | "visible" | "exiting"
+  >("hidden");
   const lastSelectionKeyRef = useRef<string | null>(null);
-  const keyPressTimeoutRef = useRef<number | null>(null);
   const timelineScrollRef = useRef<HTMLDivElement>(null);
+  const resultsViewTimeoutRef = useRef<number | null>(null);
   const currentSong = activeState?.currentSong ?? null;
+  const activeTopSongIds = useMemo(
+    () => getTopSongIds(activeState?.songList ?? []),
+    [activeState?.songList]
+  );
   const timelineSongs = useMemo<TimelineSongEntry[]>(() => {
     if (!activeState) {
       return [];
@@ -94,6 +116,14 @@ export function VoteSongWorkspace({
     null;
 
   useEffect(() => {
+    return () => {
+      if (resultsViewTimeoutRef.current !== null) {
+        window.clearTimeout(resultsViewTimeoutRef.current);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
     if (typeof window === "undefined") {
       return;
     }
@@ -119,14 +149,6 @@ export function VoteSongWorkspace({
   }, []);
 
   useEffect(() => {
-    return () => {
-      if (keyPressTimeoutRef.current !== null) {
-        window.clearTimeout(keyPressTimeoutRef.current);
-      }
-    };
-  }, []);
-
-  useEffect(() => {
     if (!activeCode) {
       return;
     }
@@ -139,10 +161,17 @@ export function VoteSongWorkspace({
       try {
         const snapshot = watch.localQueryResult();
 
-        if (snapshot) {
-          setActiveState(snapshot);
-          setError(null);
+        if (typeof snapshot === "undefined") {
+          return;
         }
+
+        if (snapshot === null) {
+          handleSessionEnded("This music session has ended.");
+          return;
+        }
+
+        setActiveState(snapshot);
+        setError(null);
       } catch (watchError) {
         setError(
           watchError instanceof Error
@@ -208,7 +237,7 @@ export function VoteSongWorkspace({
       currentSong.durationMs;
     const delay = Math.max(currentSongEndAt - Date.now() + 350, 350);
     const timeoutId = window.setTimeout(() => {
-      void refreshActivePlaylist(activeCode, setActiveState, setError);
+      void refreshActivePlaylist(activeCode, setActiveCode, setActiveState, setError);
     }, delay);
 
     return () => {
@@ -294,17 +323,33 @@ export function VoteSongWorkspace({
 
     setJoinState("joining");
     setError(null);
+    setResultsViewStage("hidden");
 
     const result = await syncActivePlaylistPlaybackAction(normalizedCode);
     setJoinState("idle");
 
     if (!result.ok) {
+      if (
+        result.error.includes("no longer available") ||
+        result.error.includes("has ended")
+      ) {
+        handleSessionEnded("This music session has ended.");
+        return;
+      }
+
       setError(result.error);
+      return;
+    }
+
+    if (!result.result) {
+      handleSessionEnded("This music session has ended.");
       return;
     }
 
     setActiveCode(normalizedCode);
     setActiveState(result.result);
+    setPreviousResult(null);
+    setResultsViewStage("hidden");
 
     const viewerSelection = await getActivePlaylistViewerSelectionAction(
       normalizedCode,
@@ -321,16 +366,6 @@ export function VoteSongWorkspace({
       return;
     }
 
-    if (keyPressTimeoutRef.current !== null) {
-      window.clearTimeout(keyPressTimeoutRef.current);
-    }
-
-    setPressedKeyId(songId);
-    keyPressTimeoutRef.current = window.setTimeout(() => {
-      setPressedKeyId((currentValue) => (currentValue === songId ? null : currentValue));
-      keyPressTimeoutRef.current = null;
-    }, 190);
-
     setVoteState("voting");
     setError(null);
     const result = await voteForActivePlaylistSongAction({
@@ -339,6 +374,7 @@ export function VoteSongWorkspace({
       viewerId,
     });
     setVoteState("idle");
+    setPressedKeyId((currentValue) => (currentValue === songId ? null : currentValue));
 
     if (!result.ok) {
       setError(result.error);
@@ -349,22 +385,167 @@ export function VoteSongWorkspace({
     setSelectedSongId(result.result.selectedSongId);
   };
 
-  const playedSongIds = new Set(activeState?.playedSongs.map((song) => song.id) ?? []);
   const hasJoinedRoom = activeCode !== null && activeState !== null;
-  const currentVoteMax = Math.max(
-    ...(
-      activeState?.songList.map((entry) => entry.vote) ?? [0]
-    ),
-    1
-  );
+  const hasEndedSession = previousResult !== null && !hasJoinedRoom;
+  const isResultsVisible = resultsViewStage !== "hidden";
+  const resultsSnapshot = activeState
+    ? {
+        batch: activeState.currentBatch,
+        songList: activeState.songList,
+        topSongIds: activeTopSongIds,
+      }
+    : previousResult;
+  const toggleResultsView = () => {
+    if (resultsViewTimeoutRef.current !== null) {
+      window.clearTimeout(resultsViewTimeoutRef.current);
+      resultsViewTimeoutRef.current = null;
+    }
+
+    if (resultsViewStage === "hidden") {
+      setResultsViewStage("entering");
+      resultsViewTimeoutRef.current = window.setTimeout(() => {
+        setResultsViewStage("visible");
+        resultsViewTimeoutRef.current = null;
+      }, 920);
+      return;
+    }
+
+    if (resultsViewStage === "visible") {
+      setResultsViewStage("exiting");
+      resultsViewTimeoutRef.current = window.setTimeout(() => {
+        setResultsViewStage("hidden");
+        resultsViewTimeoutRef.current = null;
+      }, 760);
+      return;
+    }
+
+    if (resultsViewStage === "entering") {
+      setResultsViewStage("visible");
+      return;
+    }
+
+    setResultsViewStage("hidden");
+  };
+  const handleSessionEnded = (message: string) => {
+    if (activeState?.currentBatch.length) {
+      setPreviousResult({
+        batch: activeState.currentBatch,
+        code: activeCode,
+        endedMessage: message,
+        songList: activeState.songList,
+        topSongIds: getTopSongIds(activeState.songList),
+      });
+    }
+    setResultsViewStage("hidden");
+    setActiveCode(null);
+    setActiveState(null);
+    setSelectedSongId(null);
+    setSelectedTimelineSongId(null);
+    setError(message);
+  };
 
   return (
     <div
       className={`vote-song-workspace${
-        hasJoinedRoom ? " vote-song-workspace--live" : " vote-song-workspace--intro"
+        hasJoinedRoom
+          ? " vote-song-workspace--live"
+          : hasEndedSession
+            ? " vote-song-workspace--ended"
+            : " vote-song-workspace--intro"
       }`}
     >
-      {!hasJoinedRoom ? (
+      {hasEndedSession && previousResult ? (
+        <>
+          <div className="vote-song-workspace__left vote-song-workspace__left--ended">
+            <div className="vote-song-workspace__section-header">
+              <div>
+                <h3 className="playlist-workspace__songs-title">
+                  Voting Options
+                </h3>
+                <p className="vote-song-workspace__ended-label">
+                  {previousResult.endedMessage}
+                </p>
+              </div>
+              <div className="vote-song-workspace__header-side">
+                <button
+                  type="button"
+                  className="playlist-workspace__secondary vote-song-workspace__previous-button"
+                  onClick={() => {
+                    toggleResultsView();
+                  }}
+                >
+                  {isResultsVisible ? "Hide Results" : "Show Results"}
+                </button>
+              </div>
+            </div>
+            <div className="vote-song-workspace__card vote-song-workspace__card--vote">
+              {isResultsVisible ? (
+                <>
+                  <VoteSubwooferPanel
+                    isStatic
+                    selectedSongId={null}
+                    songList={previousResult.songList}
+                    songs={previousResult.batch}
+                    stage={resultsViewStage}
+                    topSongIds={previousResult.topSongIds}
+                  />
+                </>
+              ) : (
+                <div className="vote-song-workspace__ended-copy">
+                  <strong>Session complete</strong>
+                  <span>
+                    Open show results to inspect the last vote snapshot, or
+                    enter another code to join a new room.
+                  </span>
+                </div>
+              )}
+              {isResultsVisible ? (
+                <div className="vote-song-workspace__results-list">
+                  <VoteResultsList
+                    highlightSongIds={previousResult.topSongIds}
+                    songList={previousResult.songList}
+                    songs={previousResult.batch}
+                  />
+                </div>
+              ) : null}
+            </div>
+          </div>
+
+          <div className="vote-song-workspace__entry vote-song-workspace__entry--side">
+            <label className="vote-song-workspace__entry-label" htmlFor="vote-room-code">
+              Enter Code
+            </label>
+            <input
+              id="vote-room-code"
+              className="playlist-workspace__input vote-song-workspace__entry-input"
+              type="text"
+              inputMode="text"
+              maxLength={6}
+              value={playlistCodeInput}
+              onChange={(event) =>
+                setPlaylistCodeInput(event.target.value.toUpperCase())
+              }
+              placeholder="ABCDEF"
+            />
+            <button
+              type="button"
+              className="playlist-workspace__primary vote-song-workspace__entry-button"
+              onClick={() => {
+                void handleJoinPlaylist();
+              }}
+              disabled={joinState !== "idle" || viewerId === null}
+            >
+              {joinState === "joining" ? "Entering..." : "Continue"}
+            </button>
+            {previousResult.code ? (
+              <p className="vote-song-workspace__ended-room">
+                Last room: {previousResult.code}
+              </p>
+            ) : null}
+            {error ? <p className="playlist-workspace__error">{error}</p> : null}
+          </div>
+        </>
+      ) : !hasJoinedRoom ? (
         <div className="vote-song-workspace__entry">
           <label className="vote-song-workspace__entry-label" htmlFor="vote-room-code">
             Enter Code
@@ -431,6 +612,15 @@ export function VoteSongWorkspace({
                   </h3>
                 </div>
                 <div className="vote-song-workspace__header-side">
+                  <button
+                    type="button"
+                    className="playlist-workspace__secondary vote-song-workspace__previous-button"
+                    onClick={() => {
+                      toggleResultsView();
+                    }}
+                  >
+                    {isResultsVisible ? "Back To Voting" : "Show Results"}
+                  </button>
                   <span className="playlist-workspace__pill">
                     One vote only
                   </span>
@@ -442,78 +632,126 @@ export function VoteSongWorkspace({
             <div className="vote-song-workspace__card vote-song-workspace__card--vote">
               {error ? <p className="playlist-workspace__error">{error}</p> : null}
 
-              <div className="vote-song-workspace__piano-shell">
-                <div className="vote-song-workspace__piano-viewport">
-                  <div className="vote-song-workspace__piano">
-                    {WHITE_PIANO_KEYS.map((keyLabel, index) => {
-                      const song = activeState.currentBatch[index] ?? null;
-                      const voteCount =
-                        song
-                          ? activeState.songList.find((entry) => entry.songId === song.id)
-                              ?.vote ?? 0
-                          : 0;
-                      const isCurrentSong = song
-                        ? activeState.currentSongId === song.id
-                        : false;
-                      const isPlayedSong = song ? playedSongIds.has(song.id) : false;
-                      const isSelected = song ? selectedSongId === song.id : false;
-                      const isPressing = song ? pressedKeyId === song.id : false;
-                      const canVote = !!song && !isCurrentSong && !isPlayedSong;
+              {isResultsVisible && resultsSnapshot ? (
+                <VoteSubwooferPanel
+                  currentSongId={activeState.currentSongId}
+                  selectedSongId={selectedSongId}
+                  songList={resultsSnapshot.songList}
+                  songs={resultsSnapshot.batch}
+                  stage={resultsViewStage}
+                  topSongIds={resultsSnapshot.topSongIds}
+                />
+              ) : (
+                <div className="vote-song-workspace__piano-shell">
+                  <div className="vote-song-workspace__piano-viewport">
+                    <div className="vote-song-workspace__piano">
+                      {WHITE_PIANO_KEYS.map((keyLabel, index) => {
+                        const song = activeState.currentBatch[index] ?? null;
+                        const voteCount =
+                          song
+                            ? activeState.songList.find((entry) => entry.songId === song.id)
+                                ?.vote ?? 0
+                            : 0;
+                        const isCurrentSong = song
+                          ? activeState.currentSongId === song.id
+                          : false;
+                        const isSelected = song ? selectedSongId === song.id : false;
+                        const isPressing = song ? pressedKeyId === song.id : false;
+                        const canVote = !!song;
 
-                      return (
-                        <button
-                          key={`white-${keyLabel}`}
-                          type="button"
-                          className={`vote-song-workspace__piano-white-key${
-                            isSelected ? " is-selected" : ""
-                          }${isCurrentSong ? " is-current" : ""}${
-                            isPlayedSong ? " is-played" : ""
-                          }${isPressing ? " is-pressing" : ""}`}
-                          onClick={() => {
-                            if (song && canVote) {
-                              void handleVoteForSong(song.id);
-                            }
-                          }}
-                          disabled={!canVote || voteState !== "idle"}
-                        >
-                          <div className="vote-song-workspace__piano-key-content">
-                            <span className="vote-song-workspace__piano-key-label">
-                              
-                            </span>
-                            <strong>
-                              <MarqueeText text={song?.title ?? "Empty"} />
-                            </strong>
-                            <span>
-                              <MarqueeText
-                                text={
-                                  song
-                                    ? isCurrentSong
-                                      ? "Playing"
-                                      : isPlayedSong
-                                        ? "Played"
+                        return (
+                          <button
+                            key={`white-${keyLabel}`}
+                            type="button"
+                            className={`vote-song-workspace__piano-white-key${
+                              isSelected ? " is-selected" : ""
+                            }${isCurrentSong ? " is-current" : ""}${
+                              isPressing ? " is-pressing" : ""
+                            }`}
+                            onPointerDown={() => {
+                              if (song && canVote && voteState === "idle") {
+                                setPressedKeyId(song.id);
+                              }
+                            }}
+                            onPointerUp={() => {
+                              setPressedKeyId((currentValue) =>
+                                currentValue === song?.id ? null : currentValue
+                              );
+                            }}
+                            onPointerLeave={() => {
+                              setPressedKeyId((currentValue) =>
+                                currentValue === song?.id ? null : currentValue
+                              );
+                            }}
+                            onPointerCancel={() => {
+                              setPressedKeyId((currentValue) =>
+                                currentValue === song?.id ? null : currentValue
+                              );
+                            }}
+                            onClick={() => {
+                              if (song && canVote) {
+                                void handleVoteForSong(song.id);
+                              }
+                            }}
+                            disabled={!canVote || voteState !== "idle"}
+                          >
+                            <div className="vote-song-workspace__piano-key-content">
+                              <span className="vote-song-workspace__piano-key-label">
+                                
+                              </span>
+                              <strong>
+                                <MarqueeText text={song?.title ?? "Empty"} />
+                              </strong>
+                              <span>
+                                <MarqueeText
+                                  text={
+                                    song
+                                      ? isCurrentSong
+                                        ? `Playing · ${voteCount} votes`
                                         : `${voteCount} votes`
-                                    : "No song"
-                                }
-                              />
-                            </span>
-                          </div>
-                        </button>
-                      );
-                    })}
+                                      : "No song"
+                                  }
+                                />
+                              </span>
+                            </div>
+                          </button>
+                        );
+                      })}
 
-                    {BLACK_PIANO_KEYS.map((key) => (
-                      <div
-                        key={`black-${key.label}`}
-                        className={`vote-song-workspace__piano-black-key vote-song-workspace__piano-black-key--after-${key.afterIndex}`}
-                      >
-                        <span className="vote-song-workspace__piano-black-label">
-                          
-                        </span>
-                      </div>
-                    ))}
+                      {BLACK_PIANO_KEYS.map((key) => (
+                        <div
+                          key={`black-${key.label}`}
+                          className={`vote-song-workspace__piano-black-key vote-song-workspace__piano-black-key--after-${key.afterIndex}${
+                            pressedBlackKeyId === key.label ? " is-pressing" : ""
+                          }`}
+                          onPointerDown={() => {
+                            setPressedBlackKeyId(key.label);
+                          }}
+                          onPointerUp={() => {
+                            setPressedBlackKeyId((currentValue) =>
+                              currentValue === key.label ? null : currentValue
+                            );
+                          }}
+                          onPointerLeave={() => {
+                            setPressedBlackKeyId((currentValue) =>
+                              currentValue === key.label ? null : currentValue
+                            );
+                          }}
+                          onPointerCancel={() => {
+                            setPressedBlackKeyId((currentValue) =>
+                              currentValue === key.label ? null : currentValue
+                            );
+                          }}
+                        >
+                          <span className="vote-song-workspace__piano-black-label">
+                            
+                          </span>
+                        </div>
+                      ))}
+                    </div>
                   </div>
                 </div>
-              </div>
+              )}
             </div>
           </div>
 
@@ -526,35 +764,12 @@ export function VoteSongWorkspace({
               </div>
 
               <div className="vote-song-workspace__results-list">
-                {activeState.currentBatch.map((song) => {
-                  const voteCount =
-                    activeState.songList.find((entry) => entry.songId === song.id)
-                      ?.vote ?? 0;
-                  const fillWidth = `${Math.max((voteCount / currentVoteMax) * 100, voteCount > 0 ? 10 : 0)}%`;
-                  const isCurrentSong = activeState.currentSongId === song.id;
-
-                  return (
-                    <div
-                      key={`result-${song.id}`}
-                      className={`vote-song-workspace__result-row${
-                        isCurrentSong ? " is-current" : ""
-                      }`}
-                    >
-                      <div className="vote-song-workspace__result-copy">
-                        <strong>
-                          <MarqueeText text={song.title} />
-                        </strong>
-                        <span>{voteCount} votes</span>
-                      </div>
-                      <div className="vote-song-workspace__result-bar">
-                        <span
-                          className="vote-song-workspace__result-fill"
-                          style={{ width: fillWidth }}
-                        />
-                      </div>
-                    </div>
-                  );
-                })}
+                <VoteResultsList
+                  currentSongId={activeState.currentSongId}
+                  highlightSongIds={activeTopSongIds}
+                  songList={activeState.songList}
+                  songs={activeState.currentBatch}
+                />
               </div>
             </div>
           </div>
@@ -575,6 +790,193 @@ export function VoteSongWorkspace({
         </>
       ) : null}
     </div>
+  );
+}
+
+function VoteSubwooferPanel({
+  currentSongId = null,
+  isStatic = false,
+  selectedSongId,
+  songList,
+  songs,
+  stage,
+  topSongIds,
+}: {
+  currentSongId?: string | null;
+  isStatic?: boolean;
+  selectedSongId: string | null;
+  songList: ActivePlaylistSongVote[];
+  songs: PlaylistSong[];
+  stage: "hidden" | "entering" | "visible" | "exiting";
+  topSongIds: string[];
+}) {
+  const voteMax = Math.max(...songList.map((entry) => entry.vote), 1);
+  const baseVertices = songs.map((song, index) => {
+    const angle = songs.length === 1 ? -90 : -90 + (360 / songs.length) * index;
+    const radians = (angle * Math.PI) / 180;
+
+    return {
+      left: 50 + Math.cos(radians) * 31,
+      song,
+      top: 48 + Math.sin(radians) * 31,
+    };
+  });
+  const positionedSongs = baseVertices.map(({ left, song, top }) => {
+    const voteCount =
+      songList.find((entry) => entry.songId === song.id)?.vote ?? 0;
+    const voteRatio = voteCount / voteMax;
+
+    return {
+      left,
+      song,
+      top,
+      voteCount,
+      voteRatio,
+    };
+  });
+  const skillOutlinePoints = baseVertices
+    .map(({ left, top }) => `${left},${top}`)
+    .join(" ");
+  const wavePoints = positionedSongs
+    .map(({ left, top, voteRatio }) =>
+      scalePointFromCenter(left, top, 50, 48, 0.72 + voteRatio * 0.42)
+    )
+    .map(({ left, top }) => `${left},${top}`)
+    .join(" ");
+  const outerWavePoints = positionedSongs
+    .map(({ left, top, voteRatio }) =>
+      scalePointFromCenter(left, top, 50, 48, 0.94 + voteRatio * 0.56)
+    )
+    .map(({ left, top }) => `${left},${top}`)
+    .join(" ");
+
+  return (
+    <div
+      className={`vote-song-workspace__subwoofer-shell vote-song-workspace__subwoofer-shell--${stage}`}
+    >
+      <SubwooferScene stage={stage} />
+      <div className="vote-song-workspace__subwoofer-graph" aria-hidden="true">
+        <svg
+          className="vote-song-workspace__skill-outline"
+          viewBox="0 0 100 100"
+          preserveAspectRatio="none"
+        >
+          {positionedSongs.length > 1 ? (
+            <>
+              <polygon
+                points={outerWavePoints}
+                className="vote-song-workspace__skill-wave vote-song-workspace__skill-wave--outer"
+              />
+              <polygon
+                points={wavePoints}
+                className="vote-song-workspace__skill-wave vote-song-workspace__skill-wave--inner"
+              />
+            </>
+          ) : null}
+          {positionedSongs.length > 1 ? (
+            <polygon
+              points={skillOutlinePoints}
+              className="vote-song-workspace__skill-outline-path"
+            />
+          ) : null}
+        </svg>
+        {positionedSongs.map(({ left, song, top, voteCount }, index) => {
+          const isTop = topSongIds.includes(song.id);
+          const isSelected = selectedSongId === song.id;
+          const isCurrent = currentSongId === song.id;
+          const visualStyle = {
+            "--vote-skill-delay": `${index * 90}ms`,
+            "--vote-skill-left": `${left}%`,
+            "--vote-skill-top": `${top}%`,
+          } as CSSProperties;
+
+          return (
+            <div
+              key={song.id}
+              className="vote-song-workspace__skill-cluster"
+              style={visualStyle}
+            >
+              <div
+                className={`vote-song-workspace__skill-node${
+                  isSelected ? " is-selected" : ""
+                }${isTop ? " is-top" : ""}${isCurrent ? " is-current" : ""}${
+                  isStatic ? " is-static" : ""
+                }`}
+              >
+                <span className="vote-song-workspace__skill-node-art-shell">
+                  {song.artworkUrl ? (
+                    <img
+                      src={song.artworkUrl}
+                      alt={song.title}
+                      className="vote-song-workspace__skill-node-art"
+                    />
+                  ) : (
+                    <span
+                      className="vote-song-workspace__skill-node-art vote-song-workspace__skill-node-art--fallback"
+                      aria-hidden="true"
+                    >
+                      {song.title.charAt(0).toUpperCase()}
+                    </span>
+                  )}
+                </span>
+                <span className="vote-song-workspace__skill-node-copy">
+                  <strong>{song.title}</strong>
+                  <span>{voteCount} votes</span>
+                </span>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function VoteResultsList({
+  currentSongId = null,
+  highlightSongIds = [],
+  songList,
+  songs,
+}: {
+  currentSongId?: string | null;
+  highlightSongIds?: string[];
+  songList: ActivePlaylistSongVote[];
+  songs: PlaylistSong[];
+}) {
+  const currentVoteMax = Math.max(...songList.map((entry) => entry.vote), 1);
+
+  return (
+    <>
+      {songs.map((song) => {
+        const voteCount =
+          songList.find((entry) => entry.songId === song.id)?.vote ?? 0;
+        const fillWidth = `${Math.max((voteCount / currentVoteMax) * 100, voteCount > 0 ? 10 : 0)}%`;
+        const isCurrentSong = currentSongId === song.id;
+        const isTop = highlightSongIds.includes(song.id);
+
+        return (
+          <div
+            key={`result-${song.id}`}
+            className={`vote-song-workspace__result-row${
+              isCurrentSong ? " is-current" : ""
+            }${isTop ? " is-top" : ""}`}
+          >
+            <div className="vote-song-workspace__result-copy">
+              <strong>
+                <MarqueeText text={song.title} />
+              </strong>
+              <span>{voteCount} votes</span>
+            </div>
+            <div className="vote-song-workspace__result-bar">
+              <span
+                className="vote-song-workspace__result-fill"
+                style={{ width: fillWidth }}
+              />
+            </div>
+          </div>
+        );
+      })}
+    </>
   );
 }
 
@@ -1011,6 +1413,7 @@ function normalizeCode(code: string) {
 
 async function refreshActivePlaylist(
   code: string,
+  setActiveCode: (code: string | null) => void,
   setActiveState: (state: ActivePlaylistState | null) => void,
   setError: (error: string | null) => void
 ) {
@@ -1018,6 +1421,13 @@ async function refreshActivePlaylist(
 
   if (!result.ok) {
     setError(result.error);
+    return;
+  }
+
+  if (!result.result) {
+    setActiveCode(null);
+    setActiveState(null);
+    setError("This music session has ended.");
     return;
   }
 
@@ -1054,6 +1464,31 @@ function getSongDestinationUrl(song: PlaylistSong) {
   }
 
   return `https://music.youtube.com/watch?v=${videoId}`;
+}
+
+function getTopSongIds(songList: ActivePlaylistSongVote[]) {
+  const topVote = Math.max(...songList.map((entry) => entry.vote), 0);
+
+  if (topVote <= 0) {
+    return [];
+  }
+
+  return songList
+    .filter((entry) => entry.vote === topVote)
+    .map((entry) => entry.songId);
+}
+
+function scalePointFromCenter(
+  left: number,
+  top: number,
+  centerLeft: number,
+  centerTop: number,
+  scale: number
+) {
+  return {
+    left: centerLeft + (left - centerLeft) * scale,
+    top: centerTop + (top - centerTop) * scale,
+  };
 }
 
 function formatPlaybackTime(seconds: number) {
