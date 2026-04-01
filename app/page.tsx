@@ -161,7 +161,10 @@ export default function Home() {
       <PlaylistWorkspace
         isVisible={isPlaylistWorkspaceVisible}
         mode={viewState === "vote" ? "vote" : "publish"}
-        onPublish={triggerPublishEffect}
+        onPublish={() => {
+          triggerPublishEffect();
+          setViewState("toVote");
+        }}
         onVoteVolumeChange={setVoteVolumeLevel}
         voteVolumeLevel={voteVolumeLevel}
       />

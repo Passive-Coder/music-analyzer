@@ -2,6 +2,7 @@
 "use client";
 
 import {
+  useCallback,
   useEffect,
   useMemo,
   useState,
@@ -15,7 +16,11 @@ import {
   syncActivePlaylistPlaybackAction,
   voteForActivePlaylistSongAction,
 } from "@/app/actions/activePlaylist";
+import { MusicVisualizerSphere } from "@/app/components/MusicVisualizerSphere";
 import { SubwooferScene } from "@/app/components/SubwooferScene";
+import { VoteSongBeatParticles } from "@/app/components/VoteSongBeatParticles";
+import { VoteSongLyricsPanel } from "@/app/components/VoteSongLyricsPanel";
+import type { TrackLyrics } from "@/lib/lyrics";
 import type {
   ActivePlaylistSongVote,
   ActivePlaylistState,
@@ -82,10 +87,38 @@ export function VoteSongWorkspace({
   const timelineScrollRef = useRef<HTMLDivElement>(null);
   const resultsViewTimeoutRef = useRef<number | null>(null);
   const currentSong = activeState?.currentSong ?? null;
+  const currentSongId = currentSong?.id ?? null;
+  const currentSongTitle = currentSong?.title ?? "";
+  const currentSongArtist = currentSong?.artists[0] ?? "";
+  const currentSongAlbum = currentSong?.album ?? "";
+  const currentSongDurationMs = currentSong?.durationMs ?? 0;
+  const [lyricsData, setLyricsData] = useState<{
+    songId: string | null;
+    status: "idle" | "loading" | "ready" | "missing" | "error";
+    track: TrackLyrics | null;
+  }>({
+    songId: null,
+    status: "idle",
+    track: null,
+  });
   const activeTopSongIds = useMemo(
     () => getTopSongIds(activeState?.songList ?? []),
     [activeState?.songList]
   );
+  const [livePlayback, setLivePlayback] = useState<{
+    currentMs: number | null;
+    songId: string | null;
+  }>({
+    currentMs: null,
+    songId: null,
+  });
+  const activeLyrics =
+    currentSong && lyricsData.songId === currentSong.id ? lyricsData.track : null;
+  const activeLyricsStatus = !currentSong
+    ? "idle"
+    : lyricsData.songId === currentSong.id
+      ? lyricsData.status
+      : "loading";
   const timelineSongs = useMemo<TimelineSongEntry[]>(() => {
     if (!activeState) {
       return [];
@@ -114,6 +147,26 @@ export function VoteSongWorkspace({
   const selectedTimelineSong =
     timelineSongs.find((entry) => entry.song.id === selectedTimelineSongId)?.song ??
     null;
+  const handleSessionEnded = useCallback(
+    (message: string) => {
+      if (activeState?.currentBatch.length) {
+        setPreviousResult({
+          batch: activeState.currentBatch,
+          code: activeCode,
+          endedMessage: message,
+          songList: activeState.songList,
+          topSongIds: getTopSongIds(activeState.songList),
+        });
+      }
+      setResultsViewStage("hidden");
+      setActiveCode(null);
+      setActiveState(null);
+      setSelectedSongId(null);
+      setSelectedTimelineSongId(null);
+      setError(message);
+    },
+    [activeCode, activeState]
+  );
 
   useEffect(() => {
     return () => {
@@ -187,7 +240,7 @@ export function VoteSongWorkspace({
     return () => {
       unsubscribe();
     };
-  }, [activeCode, convexClient]);
+  }, [activeCode, convexClient, handleSessionEnded]);
 
   useEffect(() => {
     if (!activeCode || !viewerId || !activeState?.currentSongStartedAt) {
@@ -211,20 +264,6 @@ export function VoteSongWorkspace({
       }
     })();
   }, [activeCode, activeState?.currentSongId, activeState?.currentSongStartedAt, viewerId]);
-
-  useEffect(() => {
-    if (timelineSongs.length === 0) {
-      setSelectedTimelineSongId(null);
-      return;
-    }
-
-    setSelectedTimelineSongId((currentValue) =>
-      currentValue &&
-      timelineSongs.some((entry) => entry.song.id === currentValue)
-        ? currentValue
-        : null
-    );
-  }, [timelineSongs]);
 
   useEffect(() => {
     if (!activeCode || !currentSong || !activeState?.currentSongStartedAt) {
@@ -308,6 +347,158 @@ export function VoteSongWorkspace({
     };
   }, [timelineSongs]);
 
+  useEffect(() => {
+    if (!currentSongId) {
+      return;
+    }
+
+    const controller = new AbortController();
+    const timeoutId = window.setTimeout(() => {
+      controller.abort(new DOMException("Lyrics request timed out.", "AbortError"));
+    }, 8_000);
+    const query = new URLSearchParams({
+      artist: currentSongArtist,
+      durationMs: String(currentSongDurationMs),
+      title: currentSongTitle,
+    });
+    const songId = currentSongId;
+    const videoId = currentSong ? getSongVideoId(currentSong) : null;
+
+    if (videoId) {
+      query.set("videoId", videoId);
+    }
+
+    if (currentSongAlbum) {
+      query.set("album", currentSongAlbum);
+    }
+
+    void fetch(`/api/lyrics?${query.toString()}`, {
+      signal: controller.signal,
+    })
+      .then(async (response) => {
+        const payload = (await response.json()) as {
+          lyrics?: TrackLyrics | null;
+          status?: string;
+        };
+
+        if (!response.ok) {
+          throw new Error(payload.status ?? "Lyrics fetch failed.");
+        }
+
+        return payload;
+      })
+      .then((payload) => {
+        const nextTrack = payload.lyrics ?? null;
+
+        setLyricsData({
+          songId,
+          status: nextTrack?.lines.length ? "ready" : "missing",
+          track: nextTrack,
+        });
+      })
+      .catch(() => {
+        if (controller.signal.aborted) {
+          setLyricsData((currentValue) =>
+            currentValue.songId === songId && currentValue.status === "loading"
+              ? {
+                  songId,
+                  status: "missing",
+                  track: null,
+                }
+              : currentValue
+          );
+          return;
+        }
+
+        setLyricsData({
+          songId,
+          status: "error",
+          track: null,
+        });
+      });
+
+    return () => {
+      window.clearTimeout(timeoutId);
+      controller.abort();
+    };
+  }, [
+    currentSongAlbum,
+    currentSongArtist,
+    currentSongDurationMs,
+    currentSong,
+    currentSongId,
+    currentSongTitle,
+  ]);
+
+  const joinPlaylistByCode = useCallback(
+    async (normalizedCode: string) => {
+      if (!viewerId) {
+        setError("Preparing your anonymous vote session. Try again in a moment.");
+        return;
+      }
+
+      setJoinState("joining");
+      setError(null);
+      setResultsViewStage("hidden");
+
+      const result = await syncActivePlaylistPlaybackAction(normalizedCode);
+      setJoinState("idle");
+
+      if (!result.ok) {
+        if (
+          result.error.includes("no longer available") ||
+          result.error.includes("has ended")
+        ) {
+          handleSessionEnded("This music session has ended.");
+          return;
+        }
+
+        setError(result.error);
+        return;
+      }
+
+      if (!result.result) {
+        handleSessionEnded("This music session has ended.");
+        return;
+      }
+
+      setActiveCode(normalizedCode);
+      setActiveState(result.result);
+      setPreviousResult(null);
+      setResultsViewStage("hidden");
+
+      const viewerSelection = await getActivePlaylistViewerSelectionAction(
+        normalizedCode,
+        viewerId
+      );
+
+      if (viewerSelection.ok) {
+        setSelectedSongId(viewerSelection.result.selectedSongId);
+      }
+    },
+    [handleSessionEnded, viewerId]
+  );
+
+  useEffect(() => {
+    const normalizedCode = normalizeCode(defaultCode ?? "");
+
+    if (!normalizedCode) {
+      return;
+    }
+
+    if (!viewerId || (activeCode === normalizedCode && activeState)) {
+      return;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      void joinPlaylistByCode(normalizedCode);
+    }, 0);
+
+    return () => {
+      window.clearTimeout(timeoutId);
+    };
+  }, [activeCode, activeState, defaultCode, joinPlaylistByCode, viewerId]);
+
   const handleJoinPlaylist = async () => {
     const normalizedCode = normalizeCode(playlistCodeInput);
 
@@ -321,44 +512,7 @@ export function VoteSongWorkspace({
       return;
     }
 
-    setJoinState("joining");
-    setError(null);
-    setResultsViewStage("hidden");
-
-    const result = await syncActivePlaylistPlaybackAction(normalizedCode);
-    setJoinState("idle");
-
-    if (!result.ok) {
-      if (
-        result.error.includes("no longer available") ||
-        result.error.includes("has ended")
-      ) {
-        handleSessionEnded("This music session has ended.");
-        return;
-      }
-
-      setError(result.error);
-      return;
-    }
-
-    if (!result.result) {
-      handleSessionEnded("This music session has ended.");
-      return;
-    }
-
-    setActiveCode(normalizedCode);
-    setActiveState(result.result);
-    setPreviousResult(null);
-    setResultsViewStage("hidden");
-
-    const viewerSelection = await getActivePlaylistViewerSelectionAction(
-      normalizedCode,
-      viewerId
-    );
-
-    if (viewerSelection.ok) {
-      setSelectedSongId(viewerSelection.result.selectedSongId);
-    }
+    await joinPlaylistByCode(normalizedCode);
   };
 
   const handleVoteForSong = async (songId: string) => {
@@ -426,24 +580,6 @@ export function VoteSongWorkspace({
 
     setResultsViewStage("hidden");
   };
-  const handleSessionEnded = (message: string) => {
-    if (activeState?.currentBatch.length) {
-      setPreviousResult({
-        batch: activeState.currentBatch,
-        code: activeCode,
-        endedMessage: message,
-        songList: activeState.songList,
-        topSongIds: getTopSongIds(activeState.songList),
-      });
-    }
-    setResultsViewStage("hidden");
-    setActiveCode(null);
-    setActiveState(null);
-    setSelectedSongId(null);
-    setSelectedTimelineSongId(null);
-    setError(message);
-  };
-
   return (
     <div
       className={`vote-song-workspace${
@@ -454,6 +590,18 @@ export function VoteSongWorkspace({
             : " vote-song-workspace--intro"
       }`}
     >
+      {hasJoinedRoom && activeState ? (
+        <VoteSongBeatParticles
+          currentSong={activeState.currentSong}
+          lyrics={activeLyrics}
+          playbackTimeMs={
+            livePlayback.songId === activeState.currentSong?.id
+              ? livePlayback.currentMs
+              : null
+          }
+          startedAt={activeState.currentSongStartedAt}
+        />
+      ) : null}
       {hasEndedSession && previousResult ? (
         <>
           <div className="vote-song-workspace__left vote-song-workspace__left--ended">
@@ -756,21 +904,18 @@ export function VoteSongWorkspace({
           </div>
 
           <div className="vote-song-workspace__middle">
-            <div className="vote-song-workspace__card vote-song-workspace__card--results">
-              <div className="vote-song-workspace__section-header vote-song-workspace__section-header--compact">
-                <div>
-                  <h3 className="playlist-workspace__songs-title">Live Results</h3>
-                </div>
-              </div>
-
-              <div className="vote-song-workspace__results-list">
-                <VoteResultsList
-                  currentSongId={activeState.currentSongId}
-                  highlightSongIds={activeTopSongIds}
-                  songList={activeState.songList}
-                  songs={activeState.currentBatch}
-                />
-              </div>
+            <div className="vote-song-workspace__card vote-song-workspace__card--visualizer">
+              <MusicVisualizerSphere
+                currentSong={activeState.currentSong}
+                lyrics={activeLyrics}
+                playbackTimeMs={
+                  livePlayback.songId === activeState.currentSong?.id
+                    ? livePlayback.currentMs
+                    : null
+                }
+                songList={activeState.songList}
+                startedAt={activeState.currentSongStartedAt}
+              />
             </div>
           </div>
 
@@ -783,6 +928,26 @@ export function VoteSongWorkspace({
               selectedTimelineSong={selectedTimelineSong}
               onCloseSelectedTimelineSong={() => {
                 setSelectedTimelineSongId(null);
+              }}
+              lyrics={activeLyrics}
+              lyricsStatus={activeLyricsStatus}
+              onPlaybackProgress={({ currentSeconds, songId }) => {
+                const nextCurrentMs =
+                  typeof currentSeconds === "number" ? currentSeconds * 1_000 : null;
+
+                setLivePlayback((currentValue) => {
+                  if (
+                    currentValue.songId === songId &&
+                    currentValue.currentMs === nextCurrentMs
+                  ) {
+                    return currentValue;
+                  }
+
+                  return {
+                    currentMs: nextCurrentMs,
+                    songId,
+                  };
+                });
               }}
               volumeLevel={volumeLevel}
             />
@@ -1096,6 +1261,9 @@ function TimelineRecorder({
 
 function VoteSongPlayerPanel({
   code,
+  lyrics,
+  lyricsStatus,
+  onPlaybackProgress,
   onVolumeChange,
   onCloseSelectedTimelineSong,
   selectedTimelineSong,
@@ -1104,6 +1272,12 @@ function VoteSongPlayerPanel({
   volumeLevel = 72,
 }: {
   code: string | null;
+  lyrics: TrackLyrics | null;
+  lyricsStatus: "idle" | "ready" | "missing" | "error" | "loading";
+  onPlaybackProgress?: (payload: {
+    currentSeconds: number | null;
+    songId: string | null;
+  }) => void;
   onVolumeChange?: (volume: number) => void;
   onCloseSelectedTimelineSong?: () => void;
   selectedTimelineSong?: PlaylistSong | null;
@@ -1114,27 +1288,40 @@ function VoteSongPlayerPanel({
   const hostRef = useRef<HTMLDivElement>(null);
   const playerRef = useRef<YouTubePlayer | null>(null);
   const progressIntervalRef = useRef<number | null>(null);
-  const volumeRef = useRef(volumeLevel);
-  const [volume, setVolume] = useState(volumeLevel);
-  const [currentSeconds, setCurrentSeconds] = useState(0);
+  const resolvedVolume = Math.max(0, Math.min(100, volumeLevel));
+  const volumeRef = useRef(resolvedVolume);
+  const [roomNowMs, setRoomNowMs] = useState(() => Date.now());
+  const [playerClock, setPlayerClock] = useState<{
+    currentSeconds: number;
+    songId: string | null;
+  }>({
+    currentSeconds: 0,
+    songId: null,
+  });
   const [durationSeconds, setDurationSeconds] = useState(0);
-  const [status, setStatus] = useState("Waiting for a live song...");
+  const [screenMode, setScreenMode] = useState<"now-playing" | "lyrics">("now-playing");
   const streamSongId = song?.id ?? null;
   const streamDurationMs = song?.durationMs ?? 0;
   const videoId = song ? getSongVideoId(song) : null;
   const fallbackDurationSeconds = song ? song.durationMs / 1000 : 0;
-  const displayedCurrentSeconds = song && startedAt && videoId ? currentSeconds : 0;
   const displayedDurationSeconds =
     song && startedAt && videoId
       ? durationSeconds || fallbackDurationSeconds
       : fallbackDurationSeconds;
-  const displayedStatus = !song
-    ? "Waiting for a live song..."
-    : !startedAt
-      ? "Waiting for the live room clock..."
-      : !videoId
-        ? "This song cannot be streamed from YouTube Music."
-        : status;
+  const fallbackCurrentSeconds =
+    song && startedAt
+      ? Math.min(
+          Math.max((roomNowMs - Date.parse(startedAt)) / 1_000, 0),
+          displayedDurationSeconds || fallbackDurationSeconds
+        )
+      : 0;
+  const displayedCurrentSeconds =
+    playerClock.songId === streamSongId
+      ? Math.min(
+          Math.max(playerClock.currentSeconds, 0),
+          displayedDurationSeconds || fallbackDurationSeconds
+        )
+      : fallbackCurrentSeconds;
 
   useEffect(() => {
     return () => {
@@ -1145,24 +1332,43 @@ function VoteSongPlayerPanel({
   useEffect(() => {
     const player = playerRef.current;
 
+    volumeRef.current = resolvedVolume;
+
     if (!player) {
       return;
     }
 
-    player.setVolume(volume);
-  }, [volume]);
+    player.setVolume(resolvedVolume);
+  }, [resolvedVolume]);
 
   useEffect(() => {
-    const clampedVolume = Math.max(0, Math.min(100, volumeLevel));
+    if (!song || !startedAt) {
+      onPlaybackProgress?.({
+        currentSeconds: null,
+        songId: streamSongId,
+      });
+      return;
+    }
 
-    volumeRef.current = clampedVolume;
-    setVolume((currentVolume) =>
-      currentVolume === clampedVolume ? currentVolume : clampedVolume
-    );
-  }, [volumeLevel]);
+    let frameId = 0;
+    const tick = () => {
+      setRoomNowMs(Date.now());
+      frameId = window.requestAnimationFrame(tick);
+    };
+
+    frameId = window.requestAnimationFrame(tick);
+
+    return () => {
+      window.cancelAnimationFrame(frameId);
+    };
+  }, [onPlaybackProgress, song, startedAt, streamSongId]);
 
   useEffect(() => {
     if (!streamSongId || !startedAt || !hostRef.current || !videoId) {
+      onPlaybackProgress?.({
+        currentSeconds: null,
+        songId: streamSongId,
+      });
       destroyYouTubePlayer(playerRef, progressIntervalRef);
       return;
     }
@@ -1188,21 +1394,50 @@ function VoteSongPlayerPanel({
             event.target.setVolume(volumeRef.current);
             event.target.seekTo(offsetSeconds, true);
             event.target.playVideo();
-            setCurrentSeconds(offsetSeconds);
-            setStatus("Live playback synced to the room.");
-            progressIntervalRef.current = window.setInterval(() => {
-              const currentTime = event.target.getCurrentTime();
-              const liveDuration = event.target.getDuration();
+            setPlayerClock({
+              currentSeconds: offsetSeconds,
+              songId: streamSongId,
+            });
+            const liveDuration = event.target.getDuration();
 
-              setCurrentSeconds(currentTime);
+            if (Number.isFinite(liveDuration) && liveDuration > 0) {
+              setDurationSeconds(liveDuration);
+            }
 
-              if (Number.isFinite(liveDuration) && liveDuration > 0) {
-                setDurationSeconds(liveDuration);
-              }
-            }, 500);
+            startPlayerProgressTracking(event.target, progressIntervalRef, {
+              setCurrentSeconds: (value) => {
+                setPlayerClock({
+                  currentSeconds: value,
+                  songId: streamSongId,
+                });
+                onPlaybackProgress?.({
+                  currentSeconds: value,
+                  songId: streamSongId,
+                });
+              },
+              setDurationSeconds,
+            });
           },
-          onStateChange: () => {
-            setStatus("Live playback synced to the room.");
+          onStateChange: (event: { target: YouTubePlayer }) => {
+            const liveDuration = event.target.getDuration();
+
+            if (Number.isFinite(liveDuration) && liveDuration > 0) {
+              setDurationSeconds(liveDuration);
+            }
+
+            startPlayerProgressTracking(event.target, progressIntervalRef, {
+              setCurrentSeconds: (value) => {
+                setPlayerClock({
+                  currentSeconds: value,
+                  songId: streamSongId,
+                });
+                onPlaybackProgress?.({
+                  currentSeconds: value,
+                  songId: streamSongId,
+                });
+              },
+              setDurationSeconds,
+            });
           },
         },
         height: "0",
@@ -1223,9 +1458,13 @@ function VoteSongPlayerPanel({
 
     return () => {
       cancelled = true;
+      onPlaybackProgress?.({
+        currentSeconds: null,
+        songId: streamSongId,
+      });
       destroyYouTubePlayer(playerRef, progressIntervalRef);
     };
-  }, [startedAt, streamDurationMs, streamSongId, videoId]);
+  }, [onPlaybackProgress, startedAt, streamDurationMs, streamSongId, videoId]);
 
   const progress =
     displayedDurationSeconds > 0
@@ -1235,12 +1474,16 @@ function VoteSongPlayerPanel({
   const updateVolume = (nextVolume: number) => {
     const clampedVolume = Math.max(0, Math.min(100, nextVolume));
     volumeRef.current = clampedVolume;
-    setVolume(clampedVolume);
+    playerRef.current?.setVolume(clampedVolume);
     onVolumeChange?.(clampedVolume);
   };
 
   return (
-    <div className="vote-song-player">
+    <div
+      className={`vote-song-player${
+        screenMode === "lyrics" ? " vote-song-player--lyrics-mode" : ""
+      }`}
+    >
       {selectedTimelineSong ? (
         <TimelineRecorder
           song={selectedTimelineSong}
@@ -1248,79 +1491,126 @@ function VoteSongPlayerPanel({
           variant="player-side"
         />
       ) : null}
-      <div className="vote-song-player__device">
+      <div
+        className={`vote-song-player__device${
+          screenMode === "lyrics" ? " vote-song-player__device--lyrics" : ""
+        }`}
+      >
         <div className="vote-song-player__screen">
-          <div className="vote-song-player__screen-media">
-            {song?.artworkUrl ? (
-              <img
-                src={song.artworkUrl}
-                alt={song.title}
-                className="vote-song-player__art"
+          {screenMode === "lyrics" ? (
+            <>
+              <VoteSongLyricsPanel
+                artistText={song ? song.artists.join(", ") : "Waiting for sync"}
+                currentTimeMs={displayedCurrentSeconds * 1_000}
+                lyrics={lyrics}
+                onBackToPlayer={() => {
+                  setScreenMode("now-playing");
+                }}
+                songTitle={song?.title ?? "No live song yet"}
+                status={lyricsStatus}
               />
-            ) : (
-              <div className="vote-song-player__screen-fallback" />
-            )}
-          </div>
-          <div className="vote-song-player__screen-copy">
-            <p className="playlist-workspace__songs-eyebrow">Now Playing</p>
-            <h3 className="vote-song-player__title">
-              {song?.title ?? "No live song yet"}
-            </h3>
-            <p className="vote-song-player__subtitle">
-              {song
-                ? song.artists.join(", ")
-                : "Join a room to sync the active song"}
-            </p>
-            <div className="vote-song-player__progress-block">
-              <div className="vote-song-player__progress-bar">
-                <span
-                  className="vote-song-player__progress-fill"
-                  style={{ width: `${progress}%` }}
-                />
+              <div className="vote-song-player__progress-block vote-song-player__progress-block--lyrics">
+                <div className="vote-song-player__progress-bar">
+                  <span
+                    className="vote-song-player__progress-fill"
+                    style={{ width: `${progress}%` }}
+                  />
+                </div>
+                <div className="vote-song-player__time-row">
+                  <span>{formatPlaybackTime(displayedCurrentSeconds)}</span>
+                  <span>{formatPlaybackTime(displayedDurationSeconds)}</span>
+                </div>
               </div>
-              <div className="vote-song-player__time-row">
-                <span>{formatPlaybackTime(displayedCurrentSeconds)}</span>
-                <span>{formatPlaybackTime(displayedDurationSeconds)}</span>
+            </>
+          ) : (
+            <div className="vote-song-player__screen-copy">
+              <button
+                type="button"
+                className="vote-song-player__inline-toggle"
+                onClick={() => {
+                  setScreenMode("lyrics");
+                }}
+              >
+                Lyrics
+              </button>
+              <div className="vote-song-player__screen-media">
+                {song?.artworkUrl ? (
+                  <img
+                    src={song.artworkUrl}
+                    alt={song.title}
+                    className="vote-song-player__art"
+                  />
+                ) : (
+                  <div className="vote-song-player__screen-fallback" />
+                )}
+              </div>
+              <p className="playlist-workspace__songs-eyebrow">Now Playing</p>
+              <h3 className="vote-song-player__title">
+                {song?.title ?? "No live song yet"}
+              </h3>
+              <p className="vote-song-player__subtitle">
+                {song
+                  ? song.artists.join(", ")
+                  : "Join a room to sync the active song"}
+              </p>
+              <div className="vote-song-player__progress-block">
+                <div className="vote-song-player__progress-bar">
+                  <span
+                    className="vote-song-player__progress-fill"
+                    style={{ width: `${progress}%` }}
+                  />
+                </div>
+                <div className="vote-song-player__time-row">
+                  <span>{formatPlaybackTime(displayedCurrentSeconds)}</span>
+                  <span>{formatPlaybackTime(displayedDurationSeconds)}</span>
+                </div>
               </div>
             </div>
-          </div>
+          )}
         </div>
 
-        <div className="vote-song-player__wheel">
-          <div className="vote-song-player__wheel-ring">
-            <span className="vote-song-player__wheel-label vote-song-player__wheel-label--top">
-              MENU
-            </span>
-            <button
-              type="button"
-              className="vote-song-player__wheel-button vote-song-player__wheel-button--left"
-              onClick={() => updateVolume(volume - 8)}
-              aria-label="Lower volume"
-            >
-              VOL -
-            </button>
-            <button
-              type="button"
-              className="vote-song-player__wheel-button vote-song-player__wheel-button--right"
-              onClick={() => updateVolume(volume + 8)}
-              aria-label="Raise volume"
-            >
-              VOL +
-            </button>
-            <span className="vote-song-player__wheel-label vote-song-player__wheel-label--bottom">
-              LIVE
-            </span>
-            <div className="vote-song-player__wheel-center">
-              <span>VOL</span>
-              <strong>{volume}</strong>
+        {screenMode === "lyrics" ? null : (
+          <>
+            <div className="vote-song-player__wheel">
+              <div className="vote-song-player__wheel-ring">
+                <button
+                  type="button"
+                  className="vote-song-player__wheel-button vote-song-player__wheel-button--top"
+                  onClick={() => {
+                    setScreenMode("lyrics");
+                  }}
+                  aria-pressed={false}
+                >
+                  LYRICS
+                </button>
+                <button
+                  type="button"
+                  className="vote-song-player__wheel-button vote-song-player__wheel-button--left"
+                  onClick={() => updateVolume(resolvedVolume - 8)}
+                  aria-label="Lower volume"
+                >
+                  VOL -
+                </button>
+                <button
+                  type="button"
+                  className="vote-song-player__wheel-button vote-song-player__wheel-button--right"
+                  onClick={() => updateVolume(resolvedVolume + 8)}
+                  aria-label="Raise volume"
+                >
+                  VOL +
+                </button>
+                <span className="vote-song-player__wheel-room">
+                  {code ? `ROOM ${code}` : "ROOM"}
+                </span>
+                <div className="vote-song-player__wheel-center">
+                  <span>VOL</span>
+                  <strong>{resolvedVolume}</strong>
+                </div>
+              </div>
             </div>
-          </div>
-        </div>
+          </>
+        )}
 
-        <div className="vote-song-player__footer">
-          <span>{displayedStatus}</span>
-          {code ? <span>Room {code}</span> : null}
-        </div>
       </div>
 
       <div ref={hostRef} className="vote-song-player__hidden-host" />
@@ -1345,7 +1635,7 @@ declare global {
         config: {
           events: {
             onReady: (event: { target: YouTubePlayer }) => void;
-            onStateChange: () => void;
+            onStateChange: (event: { target: YouTubePlayer }) => void;
           };
           height: string;
           playerVars: Record<string, number>;
@@ -1405,6 +1695,42 @@ function destroyYouTubePlayer(
 
   playerRef.current?.destroy();
   playerRef.current = null;
+}
+
+function startPlayerProgressTracking(
+  player: YouTubePlayer,
+  intervalRef: MutableRefObject<number | null>,
+  {
+    setCurrentSeconds,
+    setDurationSeconds,
+  }: {
+    setCurrentSeconds: (value: number) => void;
+    setDurationSeconds: (value: number) => void;
+  }
+) {
+  if (intervalRef.current !== null) {
+    window.clearInterval(intervalRef.current);
+  }
+
+  const updateProgress = () => {
+    try {
+      const currentTime = player.getCurrentTime();
+      const liveDuration = player.getDuration();
+
+      if (Number.isFinite(currentTime)) {
+        setCurrentSeconds(currentTime);
+      }
+
+      if (Number.isFinite(liveDuration) && liveDuration > 0) {
+        setDurationSeconds(liveDuration);
+      }
+    } catch {
+      // Ignore transient iframe timing errors.
+    }
+  };
+
+  updateProgress();
+  intervalRef.current = window.setInterval(updateProgress, 72);
 }
 
 function normalizeCode(code: string) {

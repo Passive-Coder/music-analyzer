@@ -950,7 +950,7 @@ export function PlaylistWorkspace({
   };
 
   const handleBatchSongClick = (song: PlaylistSong) => {
-    playSong(song);
+    // Playback on click disabled at user request.
   };
 
   const handleLibrarySongClick = (song: PlaylistSong, index: number) => {
@@ -965,7 +965,7 @@ export function PlaylistWorkspace({
       return;
     }
 
-    playSong(song);
+    // Playback on click disabled at user request.
   };
 
   const handleStartOpeningSelection = () => {
@@ -1020,41 +1020,25 @@ export function PlaylistWorkspace({
         />
       ) : !isAuthenticated ? (
         <div className="playlist-workspace__auth-layout">
-          <aside className="playlist-workspace__songs-pane playlist-workspace__songs-pane--auth">
-            <div className="playlist-workspace__header playlist-workspace__header--meta">
-              <div className="playlist-workspace__brand">
-                <div className="playlist-workspace__brand-copy">
-                  <p className="playlist-workspace__eyebrow">YouTube</p>
-                  <div className="playlist-workspace__brand-row">
-                    <YouTubeGlyph />
-                    <h2 className="playlist-workspace__title">
-                      {isVoteMode ? "Choose Song" : "Playlist"}
-                    </h2>
-                  </div>
-                </div>
-              </div>
+          {authState === "loading" ? (
+            <div className="playlist-workspace__auth-card">
+              <p className="playlist-workspace__songs-eyebrow">
+                Google Sign-In
+              </p>
+              <h3 className="playlist-workspace__songs-title">
+                Checking your Google session
+              </h3>
+              <p className="playlist-workspace__copy">
+                Hold on while Octave checks whether you are already signed in.
+              </p>
             </div>
+          ) : (
+            <GoogleSignInPanel mode={mode} onSignedIn={handleSignedIn} />
+          )}
 
-            {authState === "loading" ? (
-              <div className="playlist-workspace__auth-card">
-                <p className="playlist-workspace__songs-eyebrow">
-                  Google Sign-In
-                </p>
-                <h3 className="playlist-workspace__songs-title">
-                  Checking your Google session
-                </h3>
-                <p className="playlist-workspace__copy">
-                  Hold on while Octave checks whether you are already signed in.
-                </p>
-              </div>
-            ) : (
-              <GoogleSignInPanel mode={mode} onSignedIn={handleSignedIn} />
-            )}
-
-            {authError ? (
-              <p className="playlist-workspace__error">{authError}</p>
-            ) : null}
-          </aside>
+          {authError ? (
+            <p className="playlist-workspace__error">{authError}</p>
+          ) : null}
         </div>
       ) : (
         <>
@@ -1285,30 +1269,38 @@ export function PlaylistWorkspace({
                   </div>
 
                   <div className="playlist-batch__list">
-                    {activeBatch.map(({ song, index }, songIndex) => {
-                      const isEditingTarget =
-                        editingTarget?.globalIndex === index;
-                      const isLiveCurrentSong = publishedCurrentSong?.id === song.id;
-                      const voteCount = getVoteCount(songwiseVote, songIndex);
-                      const canSelectBatchSong =
-                        !isVoteMode &&
-                        (!isPublished || (activeBatchStatus === "upcoming" && isCreator));
+                    {(() => {
+                      const currentSongGlobalIndex = publishedCurrentSong
+                        ? batchSongs.findIndex((s) => s.id === publishedCurrentSong.id)
+                        : -1;
 
-                      return (
-                        <article
-                          key={`${song.id}-${index}`}
-                          className={`playlist-song-card${
-                            isEditingTarget ? " is-editing" : ""
-                          }${isLiveCurrentSong ? " is-live-current" : ""}`}
-                          role="button"
-                          tabIndex={0}
-                          onClick={() => handleBatchSongClick(song)}
-                          onKeyDown={(event) =>
-                            handleSongCardKeyDown(event, () =>
-                              handleBatchSongClick(song)
-                            )
-                          }
-                        >
+                      return activeBatch.map(({ song, index }, songIndex) => {
+                        const isEditingTarget =
+                          editingTarget?.globalIndex === index;
+                        const isLiveCurrentSong = currentSongGlobalIndex !== -1 && index === currentSongGlobalIndex;
+                        const isActuallyPlayed = songsPlayedBefore.some((s) => s.id === song.id);
+                        const isHandledBeforeCurrent = currentSongGlobalIndex !== -1 && index < currentSongGlobalIndex;
+
+                        const voteCount = getVoteCount(songwiseVote, songIndex);
+                        const canSelectBatchSong =
+                          !isVoteMode &&
+                          (!isPublished || (activeBatchStatus === "upcoming" && isCreator));
+
+                        return (
+                          <article
+                            key={`${song.id}-${index}`}
+                            className={`playlist-song-card${
+                              isEditingTarget ? " is-editing" : ""
+                            }${isLiveCurrentSong ? " is-live-current" : ""}`}
+                            role="button"
+                            tabIndex={0}
+                            onClick={() => handleBatchSongClick(song)}
+                            onKeyDown={(event) =>
+                              handleSongCardKeyDown(event, () =>
+                                handleBatchSongClick(song)
+                              )
+                            }
+                          >
                           <div className="playlist-song-card__order">
                             {String(index + 1).padStart(2, "0")}
                           </div>
@@ -1325,35 +1317,6 @@ export function PlaylistWorkspace({
                               {formatDuration(song.durationMs)}
                             </div>
                             <div className="playlist-song-card__controls">
-                              <button
-                                type="button"
-                                className="playlist-song-card__play-link"
-                                onClick={(event) => {
-                                  event.stopPropagation();
-                                  playSong(song);
-                                }}
-                                aria-label={`Play ${song.title}`}
-                              >
-                                ▶
-                              </button>
-                              {activeBatchStatus === "ongoing" && isPublished ? (
-                                <>
-                                  <button
-                                    type="button"
-                                    className="playlist-song-card__button playlist-song-card__button--wide"
-                                    onClick={(event) => {
-                                      event.stopPropagation();
-                                      void handleVoteForSong(songIndex);
-                                    }}
-                                    disabled={mutationState !== "idle"}
-                                  >
-                                    Vote
-                                  </button>
-                                  <span className="playlist-song-card__pill">
-                                    {voteCount} votes
-                                  </span>
-                                </>
-                              ) : null}
                               {canSelectBatchSong ? (
                                 <button
                                   type="button"
@@ -1378,18 +1341,22 @@ export function PlaylistWorkspace({
                                 <span className="playlist-song-card__pill playlist-song-card__pill--live">
                                   Playing Now
                                 </span>
-                              ) : null}
-                              {activeBatchStatus === "completed" && !isLiveCurrentSong ? (
+                              ) : isActuallyPlayed ? (
                                 <span className="playlist-song-card__pill">
                                   Played
+                                </span>
+                              ) : isHandledBeforeCurrent || activeBatchStatus === "completed" ? (
+                                <span className="playlist-song-card__pill">
+                                  Not Played
                                 </span>
                               ) : null}
                             </div>
                           </div>
                         </article>
                       );
-                    })}
-                  </div>
+                    })
+                  })()}
+                </div>
                 </section>
               ) : (
                 <div className="playlist-workspace__empty playlist-workspace__empty--songs">
@@ -1646,17 +1613,6 @@ export function PlaylistWorkspace({
                             {formatDuration(song.durationMs)}
                           </div>
                           <div className="playlist-song-card__controls">
-                            <button
-                              type="button"
-                              className="playlist-song-card__play-link"
-                              onClick={(event) => {
-                                event.stopPropagation();
-                                playSong(song);
-                              }}
-                              aria-label={`Play ${song.title}`}
-                            >
-                              ▶
-                            </button>
                             {!isVoteMode ? (
                               <>
                                 <button

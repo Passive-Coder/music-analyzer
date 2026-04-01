@@ -4,7 +4,7 @@ export class AudioManager {
   sourceNode: MediaElementAudioSourceNode | null = null;
   analyserNode: AnalyserNode | null = null;
   isPlaying = false;
-  frequencyData: Uint8Array | null = null;
+  frequencyData: Uint8Array<ArrayBuffer> | null = null;
   onEndedCallback: (() => void) | null = null;
 
   init() {
@@ -21,7 +21,9 @@ export class AudioManager {
       this.audioContext = new AudioContextClass();
       this.analyserNode = this.audioContext.createAnalyser();
       this.analyserNode.fftSize = 512;
-      this.frequencyData = new Uint8Array(this.analyserNode.frequencyBinCount);
+      this.frequencyData = new Uint8Array(
+        new ArrayBuffer(this.analyserNode.frequencyBinCount)
+      );
 
       this.audioElement = new Audio();
       this.audioElement.crossOrigin = "anonymous";
