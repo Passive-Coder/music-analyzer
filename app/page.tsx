@@ -146,6 +146,18 @@ export default function Home() {
           setViewState("home");
         }}
       />
+      {viewState === "publish" || viewState === "vote" ? (
+        <button
+          type="button"
+          className={`note-scene__page-button note-scene__page-button--${
+            viewState === "publish" ? "top-right" : "top-left"
+          }`}
+          aria-label="Return home"
+          onClick={() => {
+            setViewState("toHome");
+          }}
+        />
+      ) : null}
       <PlaylistWorkspace
         isVisible={isPlaylistWorkspaceVisible}
         mode={viewState === "vote" ? "vote" : "publish"}

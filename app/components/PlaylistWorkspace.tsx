@@ -1062,23 +1062,38 @@ export function PlaylistWorkspace({
         <div className="playlist-workspace__panel">
           {!isVoteMode ? (
             <div className="playlist-workspace__loader">
-              <label className="playlist-workspace__field">
-                <div style={{display: 'flex', flexDirection: 'row', justifyContent: 'space-around', alignItems: 'center'}}>
-                    <span className="playlist-workspace__label">
+              <div className="playlist-workspace__field">
+                <div className="playlist-workspace__field-header">
+                  <label htmlFor="playlist-url-input" className="playlist-workspace__label">
                     YouTube Playlist Link
-                  </span>
-                  <span className="playlist-workspace__pill">
-                    Signed in as {authSession?.email}
-                  </span>
+                  </label>
+                  <button
+                    type="button"
+                    className="playlist-workspace__session-pill-button"
+                    onClick={() => {
+                      void handleSignOut();
+                    }}
+                    aria-label={`Sign out ${authSession?.email ?? ""}`}
+                  >
+                    <span className="playlist-workspace__session-pill-track">
+                      <span className="playlist-workspace__session-pill-face playlist-workspace__session-pill-face--signed-in">
+                        Signed in as {authSession?.email}
+                      </span>
+                      <span className="playlist-workspace__session-pill-face playlist-workspace__session-pill-face--signout">
+                        Sign Out
+                      </span>
+                    </span>
+                  </button>
                 </div>
                 <input
+                  id="playlist-url-input"
                   className="playlist-workspace__input"
                   type="url"
                   value={playlistUrl}
                   onChange={(event) => setPlaylistUrl(event.target.value)}
                   placeholder="https://music.youtube.com/playlist?list=..."
                 />
-              </label>
+              </div>
               <button
                 type="button"
                 className="playlist-workspace__primary"
@@ -1392,17 +1407,7 @@ export function PlaylistWorkspace({
         </div>
 
         <aside className="playlist-workspace__songs-pane">
-          <div className="playlist-workspace__session-bar">
-            <button
-              type="button"
-              className="playlist-workspace__secondary playlist-workspace__secondary--compact"
-              onClick={() => {
-                void handleSignOut();
-              }}
-            >
-              Sign Out
-            </button>
-          </div>
+
           <div className="playlist-workspace__header playlist-workspace__header--meta">
             <div className="playlist-workspace__brand">
               <div className="playlist-workspace__brand-copy">
