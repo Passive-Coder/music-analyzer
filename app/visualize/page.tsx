@@ -34,6 +34,7 @@ export default function VisualizePage() {
     if (nextIndex >= songs.length) nextIndex = 0;
     const nextSong = songs[nextIndex];
     if (nextSong) {
+      setCurrentLyrics(null);
       setPlayingSong(nextSong);
       if (nextSong.previewUrl) audioManager?.play(nextSong.previewUrl);
     }
@@ -46,6 +47,7 @@ export default function VisualizePage() {
     if (prevIndex < 0) prevIndex = songs.length - 1;
     const prevSong = songs[prevIndex];
     if (prevSong) {
+      setCurrentLyrics(null);
       setPlayingSong(prevSong);
       if (prevSong.previewUrl) audioManager?.play(prevSong.previewUrl);
     }
@@ -59,18 +61,25 @@ export default function VisualizePage() {
   const isPlayingMode = playingSong !== null;
 
   useEffect(() => {
-    if (playingSong) {
-      setCurrentLyrics(null);
-      fetchLyrics(
-        playingSong.title, 
-        playingSong.artists.join(", "), 
-        playingSong.durationMs / 1000
-      ).then(lyrics => {
-        if (lyrics) setCurrentLyrics(lyrics);
-      });
-    } else {
-      setCurrentLyrics(null);
+    if (!playingSong) {
+      return;
     }
+
+    let isCancelled = false;
+
+    void fetchLyrics(
+      playingSong.title,
+      playingSong.artists.join(", "),
+      playingSong.durationMs / 1000
+    ).then((lyrics) => {
+      if (!isCancelled) {
+        setCurrentLyrics(lyrics);
+      }
+    });
+
+    return () => {
+      isCancelled = true;
+    };
   }, [playingSong]);
 
   return (
@@ -92,12 +101,14 @@ export default function VisualizePage() {
         songs={songs}
         onSongsChange={setSongs}
         onPlaySong={(song) => {
+          setCurrentLyrics(null);
           setPlayingSong(song);
           if (song.previewUrl && audioManager) {
             audioManager.play(song.previewUrl);
           }
         }}
         onStopSong={() => {
+          setCurrentLyrics(null);
           setPlayingSong(null);
           if (audioManager) audioManager.stop();
         }}
@@ -113,7 +124,10 @@ export default function VisualizePage() {
               else audioManager.resume();
             }
           }}
-          onStop={() => setPlayingSong(null)}
+          onStop={() => {
+            setCurrentLyrics(null);
+            setPlayingSong(null);
+          }}
           onNext={handleNext}
           onPrevious={handlePrevious}
           showLyrics={showLyrics}

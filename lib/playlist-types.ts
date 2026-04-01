@@ -4,11 +4,11 @@ export type PlaylistSong = {
   artworkUrl: string | null;
   durationMs: number;
   id: string;
-  previewUrl: string | null;
-  spotifyId: string | null;
-  spotifyUrl: string | null;
+  originPlaylistId?: string | null;
+  originPlaylistTitle?: string | null;
+  sourceId: string | null;
+  sourceUrl: string | null;
   title: string;
-  uri: string | null;
 };
 
 export type PlaylistData = {
@@ -17,13 +17,50 @@ export type PlaylistData = {
   imageUrl: string | null;
   owner: string;
   songs: PlaylistSong[];
-  spotifyUrl: string;
+  sourceUrl: string;
   title: string;
+};
+
+export type SongwiseVote = Record<string, number>;
+
+export type ActivePlaylistSongVote = {
+  songId: string;
+  songName: string;
+  vote: number;
+};
+
+export type ActivePlaylistViewerSelection = {
+  selectedSongId: string | null;
+};
+
+export type ActivePlaylistState = {
+  code: string;
+  currentBatch: PlaylistSong[];
+  currentBatchIndex: number;
+  currentSong: PlaylistSong | null;
+  currentSongId: string | null;
+  currentSongStartedAt: string | null;
+  playedSongs: PlaylistSong[];
+  songList: ActivePlaylistSongVote[];
+  updatedAt: string;
 };
 
 export type PublishedPlaylistRecord = {
   code: string;
   createdAt: string;
-  playlist: PlaylistData;
-  sourceUrl: string;
+  publisherEmail: string | null;
+  currentBatch: PlaylistSong[];
+  currentBatchIndex: number;
+  batches: PlaylistSong[][];
+  librarySongs: PlaylistSong[];
+  loadedPlaylists: PlaylistData[];
+  songwiseVote: SongwiseVote[];
+  songsPlayedBefore: PlaylistSong[];
+  updatedAt: string;
+};
+
+export type PublishPlaylistResult = {
+  code: string;
+  creatorToken: string;
+  record: PublishedPlaylistRecord;
 };
