@@ -1,22 +1,62 @@
 "use client";
 
-import { useEffect, useRef, useState, type CSSProperties } from "react";
+import {
+  useEffect,
+  useRef,
+  useState,
+  type CSSProperties,
+  type KeyboardEvent,
+} from "react";
 
-import type { PlaylistData, PlaylistSong } from "@/lib/playlist-types";
+import {
+  getGoogleSessionAction,
+  signOutOfGoogleAction,
+} from "@/app/actions/googleAuth";
+import {
+  advanceCurrentBatchAction,
+  appendLoadedPlaylistAction,
+  publishPlaylistAction,
+  updateUpcomingBatchSongAction,
+  voteForCurrentBatchSongAction,
+} from "@/app/actions/playlistPublishing";
+import { GoogleSignInPanel } from "@/app/components/GoogleSignInPanel";
+import { VoteSongWorkspace } from "@/app/components/VoteSongWorkspace";
+import type { GoogleSession } from "@/lib/google-session";
+import type {
+  PlaylistData,
+  PlaylistSong,
+  PublishedPlaylistRecord,
+  SongwiseVote,
+} from "@/lib/playlist-types";
 
 type PlaylistWorkspaceProps = {
   isVisible?: boolean;
+  mode?: "publish" | "vote";
+  onPublish?: () => void;
+  onVoteVolumeChange?: (volume: number) => void;
+  voteVolumeLevel?: number;
 };
 
-type RequestState = "idle" | "loading" | "publishing";
+type RequestState = "idle" | "loading";
+type MutationState = "idle" | "publishing" | "syncing";
+type AuthState = "loading" | "authenticated" | "unauthenticated";
+type EditingTarget = {
+  batchIndex: number;
+  globalIndex: number;
+  songIndex: number;
+} | null;
 type SongEntry = {
   index: number;
   song: PlaylistSong;
 };
+type BatchStatus = "completed" | "ongoing" | "upcoming";
 
+const BATCH_SIZE = 5;
+const EXAMPLE_PLAYLIST_ID = "example-fallback-playlist";
+const EXAMPLE_PLAYLIST_TITLE = "Example Playlist";
 const EXAMPLE_PLAYLIST: PlaylistData = {
   description: "Fallback data shown when the YouTube playlist request fails.",
-  id: "example-fallback-playlist",
+  id: EXAMPLE_PLAYLIST_ID,
   imageUrl: null,
   owner: "Octave Demo",
   songs: [
@@ -91,59 +131,162 @@ const EXAMPLE_PLAYLIST: PlaylistData = {
       232000
     ),
   ],
-  sourceUrl: "https://www.youtube.com/",
-  title: "Example Playlist",
+  sourceUrl: "https://music.youtube.com/",
+  title: EXAMPLE_PLAYLIST_TITLE,
 };
 
 export function PlaylistWorkspace({
   isVisible = false,
+  mode = "publish",
+  onPublish,
+  onVoteVolumeChange,
+  voteVolumeLevel = 72,
 }: PlaylistWorkspaceProps) {
   const [hasMounted, setHasMounted] = useState(false);
   const [playlistUrl, setPlaylistUrl] = useState("");
-  const [playlist, setPlaylist] = useState<PlaylistData | null>(null);
+  const [authState, setAuthState] = useState<AuthState>("loading");
+  const [authSession, setAuthSession] = useState<GoogleSession | null>(null);
+  const [authError, setAuthError] = useState<string | null>(null);
+  const [loadedPlaylists, setLoadedPlaylists] = useState<PlaylistData[]>([]);
   const [songs, setSongs] = useState<PlaylistSong[]>([]);
   const [batchSongs, setBatchSongs] = useState<PlaylistSong[]>([]);
-  const [requestState, setRequestState] = useState<RequestState>("idle");
-  const [error, setError] = useState<string | null>(null);
-  const [publishedCode, setPublishedCode] = useState<string | null>(null);
-  const [searchQuery, setSearchQuery] = useState("");
-  const [editingTargetIndex, setEditingTargetIndex] = useState<number | null>(
-    null
+  const [currentBatchIndex, setCurrentBatchIndex] = useState(0);
+  const [songwiseVote, setSongwiseVote] = useState<SongwiseVote[]>([]);
+  const [songsPlayedBefore, setSongsPlayedBefore] = useState<PlaylistSong[]>(
+    []
   );
+  const [publishedCode, setPublishedCode] = useState<string | null>(null);
+  const [creatorToken, setCreatorToken] = useState<string | null>(null);
+  const [requestState, setRequestState] = useState<RequestState>("idle");
+  const [mutationState, setMutationState] = useState<MutationState>("idle");
+  const [error, setError] = useState<string | null>(null);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [editingTarget, setEditingTarget] = useState<EditingTarget>(null);
   const [activeBatchIndex, setActiveBatchIndex] = useState(0);
+  const [loadedPlaylistCursor, setLoadedPlaylistCursor] = useState(0);
+  const [activeLoadedPlaylistId, setActiveLoadedPlaylistId] = useState<
+    string | null
+  >(null);
+  const [playbackSong, setPlaybackSong] = useState<PlaylistSong | null>(null);
+  const [playbackToken, setPlaybackToken] = useState(0);
 
+  const isVoteMode = mode === "vote";
+  const isAuthenticated = authState === "authenticated";
+  const isPublished = publishedCode !== null;
+  const isCreator = isPublished && creatorToken !== null;
   const hasSongs = songs.length > 0;
   const hasBatchSongs = batchSongs.length > 0;
   const allSongEntries = songs.map((song, index) => ({ index, song }));
-  const allBatchEntries = batchSongs.map((song, index) => ({ index, song }));
   const normalizedSearchQuery = searchQuery.trim().toLowerCase();
-  const filteredSongEntries = allSongEntries
-    .filter(({ song }) => {
-      if (!normalizedSearchQuery) {
-        return true;
-      }
+  const filteredSongEntries = allSongEntries.filter(({ song }) => {
+    if (!normalizedSearchQuery) {
+      return true;
+    }
 
-      const haystack = `${song.title} ${song.artists.join(" ")}`.toLowerCase();
-      return haystack.includes(normalizedSearchQuery);
-    });
-  const songBatches = chunkSongEntries(allBatchEntries, 5);
-  const activeBatch = songBatches[activeBatchIndex] ?? null;
+    const haystack = `${song.title} ${song.artists.join(" ")} ${song.originPlaylistTitle ?? ""}`.toLowerCase();
+    return haystack.includes(normalizedSearchQuery);
+  });
+  const songBatches = chunkSongEntries(
+    batchSongs.map((song, index) => ({ index, song })),
+    BATCH_SIZE
+  );
+  const displayedBatchIndex = isVoteMode
+    ? Math.min(currentBatchIndex, Math.max(songBatches.length - 1, 0))
+    : activeBatchIndex;
+  const activeBatch = songBatches[displayedBatchIndex] ?? null;
+  const activeBatchStatus = getBatchStatus(
+    displayedBatchIndex,
+    currentBatchIndex,
+    songBatches.length
+  );
   const editingTargetSong =
-    editingTargetIndex !== null ? batchSongs[editingTargetIndex] ?? null : null;
-  const editingTargetLabel =
-    editingTargetIndex !== null
-      ? String(editingTargetIndex + 1).padStart(2, "0")
-      : null;
-
+    editingTarget !== null ? batchSongs[editingTarget.globalIndex] ?? null : null;
+  const playbackEmbedUrl = getSongEmbedUrl(playbackSong, playbackToken);
+  const busy = requestState !== "idle" || mutationState !== "idle";
   useEffect(() => {
     setHasMounted(true);
   }, []);
 
   useEffect(() => {
+    if (!hasMounted || !isVisible) {
+      return;
+    }
+
+    let isCancelled = false;
+
+    const loadSession = async () => {
+      setAuthState("loading");
+      setAuthError(null);
+      const result = await getGoogleSessionAction();
+
+      if (isCancelled) {
+        return;
+      }
+
+      if (!result.ok) {
+        setAuthSession(null);
+        setAuthState("unauthenticated");
+        setAuthError(result.error);
+        return;
+      }
+
+      setAuthSession(result.session);
+      setAuthState(result.session ? "authenticated" : "unauthenticated");
+    };
+
+    void loadSession();
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [hasMounted, isVisible]);
+
+  useEffect(() => {
+    if (!loadedPlaylists.length) {
+      if (loadedPlaylistCursor !== 0) {
+        setLoadedPlaylistCursor(0);
+      }
+
+      if (activeLoadedPlaylistId !== null) {
+        setActiveLoadedPlaylistId(null);
+      }
+
+      return;
+    }
+
+    const nextCursor = Math.min(
+      loadedPlaylistCursor,
+      Math.max(loadedPlaylists.length - 1, 0)
+    );
+
+    if (nextCursor !== loadedPlaylistCursor) {
+      setLoadedPlaylistCursor(nextCursor);
+    }
+
+    const activeExists = activeLoadedPlaylistId
+      ? loadedPlaylists.some((playlist) => playlist.id === activeLoadedPlaylistId)
+      : false;
+
+    if (!activeExists) {
+      setActiveLoadedPlaylistId(loadedPlaylists[nextCursor]?.id ?? loadedPlaylists[0].id);
+    }
+  }, [activeLoadedPlaylistId, loadedPlaylistCursor, loadedPlaylists]);
+
+  useEffect(() => {
+    if (!hasMounted) {
+      return;
+    }
+
     if (!songBatches.length) {
       if (activeBatchIndex !== 0) {
         setActiveBatchIndex(0);
       }
+
+      if (currentBatchIndex !== 0) {
+        setCurrentBatchIndex(0);
+      }
+
+      setSongwiseVote([]);
       return;
     }
 
@@ -152,16 +295,90 @@ export function PlaylistWorkspace({
     if (activeBatchIndex > maxBatchIndex) {
       setActiveBatchIndex(maxBatchIndex);
     }
-  }, [activeBatchIndex, songBatches.length]);
+
+    if (!isPublished && currentBatchIndex > maxBatchIndex) {
+      setCurrentBatchIndex(maxBatchIndex);
+    }
+  }, [
+    activeBatchIndex,
+    currentBatchIndex,
+    hasMounted,
+    isPublished,
+    songBatches.length,
+  ]);
+
+  useEffect(() => {
+    if (!hasMounted || isPublished) {
+      return;
+    }
+
+    const localCurrentBatch =
+      chunkSongEntries(
+        batchSongs.map((song, index) => ({ index, song })),
+        BATCH_SIZE
+      )[currentBatchIndex] ?? [];
+    setSongwiseVote(createVoteSnapshot(localCurrentBatch));
+  }, [batchSongs, currentBatchIndex, hasMounted, isPublished]);
 
   if (!hasMounted) {
     return null;
   }
 
+  const applyPublishedRecord = (
+      record: PublishedPlaylistRecord,
+    nextCode?: string | null,
+    nextCreatorToken?: string | null,
+    nextActiveBatchIndex?: number
+  ) => {
+    const flattenedBatchSongs = flattenSongBatches(record.batches);
+    const resolvedActiveBatchIndex =
+      typeof nextActiveBatchIndex === "number"
+        ? Math.min(
+            Math.max(nextActiveBatchIndex, 0),
+            Math.max(record.batches.length - 1, 0)
+          )
+        : record.batches.length > 0
+          ? Math.min(record.currentBatchIndex, record.batches.length - 1)
+          : 0;
+    const fallbackActiveBatchIndex =
+      record.batches.length > 0
+        ? Math.min(record.currentBatchIndex, record.batches.length - 1)
+        : 0;
+
+    setLoadedPlaylists(record.loadedPlaylists);
+    setSongs(record.librarySongs);
+    setBatchSongs(flattenedBatchSongs);
+    setCurrentBatchIndex(record.currentBatchIndex);
+    setSongwiseVote(record.songwiseVote);
+    setSongsPlayedBefore(record.songsPlayedBefore);
+    setActiveBatchIndex(
+      Number.isFinite(resolvedActiveBatchIndex)
+        ? resolvedActiveBatchIndex
+        : fallbackActiveBatchIndex
+    );
+    setPublishedCode(nextCode ?? record.code);
+    const nextLoadedPlaylistId =
+      record.loadedPlaylists.some(
+        (playlist) => playlist.id === activeLoadedPlaylistId
+      )
+        ? activeLoadedPlaylistId
+        : record.loadedPlaylists.at(-1)?.id ?? null;
+    const nextLoadedPlaylistIndex = nextLoadedPlaylistId
+      ? record.loadedPlaylists.findIndex(
+          (playlist) => playlist.id === nextLoadedPlaylistId
+        )
+      : 0;
+    setActiveLoadedPlaylistId(nextLoadedPlaylistId);
+    setLoadedPlaylistCursor(Math.max(nextLoadedPlaylistIndex, 0));
+
+    if (typeof nextCreatorToken === "string") {
+      setCreatorToken(nextCreatorToken);
+    }
+  };
+
   const handleLoadPlaylist = async () => {
     setRequestState("loading");
     setError(null);
-    setPublishedCode(null);
 
     try {
       const response = await fetch("/api/youtube/playlist", {
@@ -181,75 +398,116 @@ export function PlaylistWorkspace({
         throw new Error(payload.error ?? "Playlist loading failed.");
       }
 
-      setPlaylist(payload.playlist);
-      setSongs(payload.playlist.songs);
-      setBatchSongs(payload.playlist.songs);
-      setSearchQuery("");
-      setEditingTargetIndex(null);
-      setActiveBatchIndex(0);
+      const normalizedPlaylist = normalizePlaylistForWorkspace(
+        payload.playlist,
+        loadedPlaylists.length
+      );
+
+      if (loadedPlaylists.some((playlist) => playlist.id === normalizedPlaylist.id)) {
+        throw new Error("That playlist is already in the loaded list.");
+      }
+
+      if (publishedCode && creatorToken) {
+        const result = await appendLoadedPlaylistAction({
+          code: publishedCode,
+          creatorToken,
+          playlist: normalizedPlaylist,
+        });
+
+        if (!result.ok) {
+          throw new Error(result.error);
+        }
+
+        applyPublishedRecord(result.result, undefined, undefined, activeBatchIndex);
+      } else {
+        setLoadedPlaylists((currentPlaylists) => [
+          ...currentPlaylists,
+          normalizedPlaylist,
+        ]);
+        setSongs((currentSongs) => [...currentSongs, ...normalizedPlaylist.songs]);
+      }
+
+      setActiveLoadedPlaylistId(normalizedPlaylist.id);
+      setLoadedPlaylistCursor(loadedPlaylists.length);
+      setPlaylistUrl("");
+      setPlaybackSong(null);
+      setError(null);
     } catch (loadError) {
-      const fallbackPlaylist = EXAMPLE_PLAYLIST;
+      const fallbackPlaylist = normalizePlaylistForWorkspace(
+        EXAMPLE_PLAYLIST,
+        loadedPlaylists.length
+      );
       const fallbackMessage =
         loadError instanceof Error
           ? `${loadError.message} Showing example playlist data instead.`
           : "Playlist loading failed. Showing example playlist data instead.";
 
-      setPlaylist(fallbackPlaylist);
-      setSongs(fallbackPlaylist.songs);
-      setBatchSongs(fallbackPlaylist.songs);
-      setSearchQuery("");
-      setEditingTargetIndex(null);
-      setActiveBatchIndex(0);
+      if (!loadedPlaylists.length) {
+        setLoadedPlaylists([fallbackPlaylist]);
+        setSongs(fallbackPlaylist.songs);
+        setActiveLoadedPlaylistId(fallbackPlaylist.id);
+        setLoadedPlaylistCursor(0);
+      }
+
       setError(fallbackMessage);
     } finally {
       setRequestState("idle");
     }
   };
 
-  const handlePublishPlaylist = async () => {
-    if (!playlist || !batchSongs.length) {
+  const playSong = (song: PlaylistSong) => {
+    const nextPlaybackToken = Date.now();
+    const embedUrl = getSongEmbedUrl(song, nextPlaybackToken);
+
+    if (!embedUrl) {
+      const fallbackUrl = getSongPlaybackUrl(song);
+
+      if (fallbackUrl) {
+        window.open(fallbackUrl, "_blank", "noopener,noreferrer");
+      }
+
       return;
     }
 
-    setRequestState("publishing");
+    setPlaybackSong(song);
+    setPlaybackToken(nextPlaybackToken);
+  };
+
+  const handlePublishPlaylist = async () => {
+    if (!hasBatchSongs) {
+      return;
+    }
+
+    setMutationState("publishing");
     setError(null);
 
-    try {
-      const response = await fetch("/api/publish-playlist", {
-        body: JSON.stringify({
-          playlist,
-          songs: batchSongs,
-          sourceUrl: playlistUrl || playlist.sourceUrl,
-        }),
-        headers: {
-          "Content-Type": "application/json",
-        },
-        method: "POST",
-      });
+    const result = await publishPlaylistAction({
+      batchSongs,
+      currentBatchIndex,
+      librarySongs: songs,
+      loadedPlaylists,
+    });
 
-      const payload = (await response.json()) as {
-        code?: string;
-        error?: string;
-      };
+    setMutationState("idle");
 
-      if (!response.ok || !payload.code) {
-        throw new Error(payload.error ?? "Publishing the playlist failed.");
-      }
-
-      setPublishedCode(payload.code);
-    } catch (publishError) {
-      setError(
-        publishError instanceof Error
-          ? publishError.message
-          : "Publishing the playlist failed."
-      );
-    } finally {
-      setRequestState("idle");
+    if (!result.ok) {
+      setError(result.error);
+      return;
     }
+
+    applyPublishedRecord(
+      result.result.record,
+      result.result.code,
+      result.result.creatorToken
+    );
+    onPublish?.();
   };
 
   const moveSong = (index: number, direction: -1 | 1) => {
-    setPublishedCode(null);
+    if (isPublished) {
+      return;
+    }
+
     setSongs((currentSongs) => {
       const nextIndex = index + direction;
 
@@ -266,7 +524,10 @@ export function PlaylistWorkspace({
   };
 
   const shuffleSongs = () => {
-    setPublishedCode(null);
+    if (isPublished) {
+      return;
+    }
+
     setSongs((currentSongs) => {
       const nextSongs = [...currentSongs];
 
@@ -283,73 +544,272 @@ export function PlaylistWorkspace({
   };
 
   const createBatchesFromOrderedSongs = () => {
-    if (!songs.length) {
+    if (!songs.length || isPublished) {
       return;
     }
 
-    setPublishedCode(null);
-    setEditingTargetIndex(null);
+    setEditingTarget(null);
+    setCurrentBatchIndex(0);
     setActiveBatchIndex(0);
+    setSongsPlayedBefore([]);
     setBatchSongs([...songs]);
   };
 
-  const selectReplacementSong = (sourceIndex: number) => {
-    if (editingTargetIndex === null) {
+  const selectReplacementSong = async (sourceIndex: number) => {
+    if (editingTarget === null) {
       return;
     }
 
-    setPublishedCode(null);
     const sourceSong = songs[sourceIndex];
 
     if (!sourceSong) {
       return;
     }
 
+    setMutationState("syncing");
+    setError(null);
+
+    if (publishedCode && creatorToken) {
+      const result = await updateUpcomingBatchSongAction({
+        batchIndex: editingTarget.batchIndex,
+        code: publishedCode,
+        creatorToken,
+        replacementSong: sourceSong,
+        songIndex: editingTarget.songIndex,
+      });
+
+      setMutationState("idle");
+
+      if (!result.ok) {
+        setError(result.error);
+        return;
+      }
+
+      applyPublishedRecord(result.result, undefined, undefined, activeBatchIndex);
+      setEditingTarget(null);
+      return;
+    }
+
     setBatchSongs((currentSongs) => {
       if (
-        editingTargetIndex < 0 ||
-        editingTargetIndex >= currentSongs.length
+        editingTarget.globalIndex < 0 ||
+        editingTarget.globalIndex >= currentSongs.length
       ) {
         return currentSongs;
       }
 
       const nextSongs = [...currentSongs];
-      nextSongs[editingTargetIndex] = sourceSong;
+      nextSongs[editingTarget.globalIndex] = sourceSong;
 
       return nextSongs;
     });
-    setEditingTargetIndex(null);
+    setEditingTarget(null);
+    setMutationState("idle");
+  };
+
+  const handleVoteForSong = async (songIndex: number) => {
+    if (!hasBatchSongs || activeBatchStatus !== "ongoing") {
+      return;
+    }
+
+    if (!publishedCode) {
+      setSongwiseVote((currentVotes) =>
+        currentVotes.map((vote, voteIndex) => {
+          if (voteIndex !== songIndex) {
+            return vote;
+          }
+
+          const voteKey = String(songIndex + 1);
+          return {
+            [voteKey]: (vote[voteKey] ?? 0) + 1,
+          };
+        })
+      );
+      return;
+    }
+
+    setMutationState("syncing");
+    setError(null);
+
+    const result = await voteForCurrentBatchSongAction({
+      code: publishedCode,
+      songIndex,
+    });
+
+    setMutationState("idle");
+
+    if (!result.ok) {
+      setError(result.error);
+      return;
+    }
+
+    applyPublishedRecord(result.result, undefined, undefined, activeBatchIndex);
+  };
+
+  const handleAdvanceBatch = async () => {
+    if (!songBatches.length || currentBatchIndex >= songBatches.length) {
+      return;
+    }
+
+    if (publishedCode && creatorToken) {
+      setMutationState("syncing");
+      setError(null);
+
+      const result = await advanceCurrentBatchAction({
+        code: publishedCode,
+        creatorToken,
+      });
+
+      setMutationState("idle");
+
+      if (!result.ok) {
+        setError(result.error);
+        return;
+      }
+
+      applyPublishedRecord(result.result);
+      return;
+    }
+
+    const currentBatch = songBatches[currentBatchIndex] ?? [];
+    const nextBatchIndex = Math.min(currentBatchIndex + 1, songBatches.length);
+
+    setSongsPlayedBefore((currentSongsPlayedBefore) => [
+      ...currentSongsPlayedBefore,
+      ...currentBatch.map(({ song }) => song),
+    ]);
+    setCurrentBatchIndex(nextBatchIndex);
+    setActiveBatchIndex(
+      songBatches.length > 0
+        ? Math.min(nextBatchIndex, songBatches.length - 1)
+        : 0
+    );
+  };
+
+  const handleBatchSongClick = (song: PlaylistSong) => {
+    playSong(song);
+  };
+
+  const handleLibrarySongClick = (song: PlaylistSong) => {
+    playSong(song);
+  };
+
+  const handleSignedIn = (session: GoogleSession) => {
+    setAuthSession(session);
+    setAuthState("authenticated");
+    setAuthError(null);
+  };
+
+  const handleSignOut = async () => {
+    const result = await signOutOfGoogleAction();
+
+    if (!result.ok) {
+      setAuthError(result.error);
+      return;
+    }
+
+    setAuthSession(null);
+    setAuthState("unauthenticated");
   };
 
   return (
     <section
-      className={`playlist-workspace${isVisible ? " is-visible" : " is-hidden"}`}
+          className={`playlist-workspace playlist-workspace--${mode}${
+            isVisible ? " is-visible" : " is-hidden"
+          }`}
       aria-hidden={!isVisible}
     >
+      {isVoteMode ? (
+        <VoteSongWorkspace
+          defaultCode={publishedCode}
+          onVolumeChange={onVoteVolumeChange}
+          volumeLevel={voteVolumeLevel}
+        />
+      ) : !isAuthenticated ? (
+        <div className="playlist-workspace__auth-layout">
+          <aside className="playlist-workspace__songs-pane playlist-workspace__songs-pane--auth">
+            <div className="playlist-workspace__header playlist-workspace__header--meta">
+              <div className="playlist-workspace__brand">
+                <div className="playlist-workspace__brand-copy">
+                  <p className="playlist-workspace__eyebrow">YouTube</p>
+                  <div className="playlist-workspace__brand-row">
+                    <YouTubeGlyph />
+                    <h2 className="playlist-workspace__title">
+                      {isVoteMode ? "Choose Song" : "Playlist"}
+                    </h2>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {authState === "loading" ? (
+              <div className="playlist-workspace__auth-card">
+                <p className="playlist-workspace__songs-eyebrow">
+                  Google Sign-In
+                </p>
+                <h3 className="playlist-workspace__songs-title">
+                  Checking your Google session
+                </h3>
+                <p className="playlist-workspace__copy">
+                  Hold on while Octave checks whether you are already signed in.
+                </p>
+              </div>
+            ) : (
+              <GoogleSignInPanel mode={mode} onSignedIn={handleSignedIn} />
+            )}
+
+            {authError ? (
+              <p className="playlist-workspace__error">{authError}</p>
+            ) : null}
+          </aside>
+        </div>
+      ) : (
+        <>
       <div className="playlist-workspace__layout">
         <div className="playlist-workspace__panel">
-          <div className="playlist-workspace__loader">
-            <label className="playlist-workspace__field">
-              <span className="playlist-workspace__label">
-                YouTube Playlist Link
-              </span>
-              <input
-                className="playlist-workspace__input"
-                type="url"
-                value={playlistUrl}
-                onChange={(event) => setPlaylistUrl(event.target.value)}
-                placeholder="https://www.youtube.com/playlist?list=..."
-              />
-            </label>
-            <button
-              type="button"
-              className="playlist-workspace__primary"
-              onClick={handleLoadPlaylist}
-              disabled={requestState !== "idle"}
-            >
-              {requestState === "loading" ? "Loading..." : "Load Playlist"}
-            </button>
-          </div>
+          {!isVoteMode ? (
+            <div className="playlist-workspace__loader">
+              <label className="playlist-workspace__field">
+                <span className="playlist-workspace__label">
+                  YouTube Playlist Link
+                </span>
+                <input
+                  className="playlist-workspace__input"
+                  type="url"
+                  value={playlistUrl}
+                  onChange={(event) => setPlaylistUrl(event.target.value)}
+                  placeholder="https://music.youtube.com/playlist?list=..."
+                />
+              </label>
+              <button
+                type="button"
+                className="playlist-workspace__primary"
+                onClick={handleLoadPlaylist}
+                disabled={requestState !== "idle"}
+              >
+                {requestState === "loading" ? "Loading..." : "Load Playlist"}
+              </button>
+            </div>
+          ) : null}
+
+          {publishedCode ? (
+            <div className="playlist-workspace__live-bar">
+              <div>
+                <p className="playlist-workspace__meta-label">Playlist Code</p>
+                <p className="playlist-workspace__live-code">{publishedCode}</p>
+              </div>
+              <div className="playlist-workspace__live-stats">
+                <span className="playlist-workspace__pill">
+                  {songsPlayedBefore.length} played
+                </span>
+                <span className="playlist-workspace__pill">
+                  {songBatches.length
+                    ? `${Math.min(currentBatchIndex + 1, songBatches.length)}/${songBatches.length} current`
+                    : "0/0 current"}
+                </span>
+              </div>
+            </div>
+          ) : null}
 
           {error ? <p className="playlist-workspace__error">{error}</p> : null}
 
@@ -358,45 +818,64 @@ export function PlaylistWorkspace({
               <div>
                 <p className="playlist-workspace__songs-eyebrow">Batches</p>
                 <h3 className="playlist-workspace__songs-title playlist-workspace__songs-title--compact">
-                  Ordered Groups Of 5
+                  {isVoteMode ? "Vote For The Next Song" : "Ordered Groups Of 5"}
                 </h3>
               </div>
               <div className="playlist-workspace__batch-nav">
                 <p className="playlist-workspace__songs-count">
                   {hasBatchSongs
-                    ? `Batch ${activeBatchIndex + 1} of ${songBatches.length}`
+                    ? `Batch ${displayedBatchIndex + 1} of ${songBatches.length}`
                     : "0 batches"}
                 </p>
-                <div className="playlist-workspace__batch-buttons">
-                  <button
-                    type="button"
-                    className="playlist-song-card__button"
-                    onClick={() =>
-                      setActiveBatchIndex((currentIndex) =>
-                        Math.max(currentIndex - 1, 0)
-                      )
-                    }
-                    disabled={!hasBatchSongs || activeBatchIndex === 0}
-                    aria-label="Previous batch"
-                  >
-                    &lt;
-                  </button>
-                  <button
-                    type="button"
-                    className="playlist-song-card__button"
-                    onClick={() =>
-                      setActiveBatchIndex((currentIndex) =>
-                        Math.min(currentIndex + 1, songBatches.length - 1)
-                      )
-                    }
-                    disabled={
-                      !hasBatchSongs ||
-                      activeBatchIndex === songBatches.length - 1
-                    }
-                    aria-label="Next batch"
-                  >
-                    &gt;
-                  </button>
+                <div className="playlist-workspace__batch-nav-tools">
+                  {!isVoteMode ? (
+                    <button
+                      type="button"
+                      className="playlist-workspace__secondary playlist-workspace__secondary--compact"
+                      onClick={handleAdvanceBatch}
+                      disabled={
+                        !songBatches.length ||
+                        busy ||
+                        (isPublished && !isCreator) ||
+                        currentBatchIndex >= songBatches.length
+                      }
+                    >
+                      Advance
+                    </button>
+                  ) : null}
+                  {!isVoteMode ? (
+                    <div className="playlist-workspace__batch-buttons">
+                      <button
+                        type="button"
+                        className="playlist-song-card__button"
+                        onClick={() =>
+                          setActiveBatchIndex((currentIndex) =>
+                            Math.max(currentIndex - 1, 0)
+                          )
+                        }
+                        disabled={!hasBatchSongs || displayedBatchIndex === 0}
+                        aria-label="Previous batch"
+                      >
+                        &lt;
+                      </button>
+                      <button
+                        type="button"
+                        className="playlist-song-card__button"
+                        onClick={() =>
+                          setActiveBatchIndex((currentIndex) =>
+                            Math.min(currentIndex + 1, songBatches.length - 1)
+                          )
+                        }
+                        disabled={
+                          !hasBatchSongs ||
+                          displayedBatchIndex === songBatches.length - 1
+                        }
+                        aria-label="Next batch"
+                      >
+                        &gt;
+                      </button>
+                    </div>
+                  ) : null}
                 </div>
               </div>
             </div>
@@ -405,9 +884,16 @@ export function PlaylistWorkspace({
               {hasBatchSongs && activeBatch ? (
                 <section className="playlist-batch">
                   <div className="playlist-batch__header">
-                    <p className="playlist-batch__label">
-                      Batch {activeBatchIndex + 1}
-                    </p>
+                    <div className="playlist-batch__meta">
+                      <p className="playlist-batch__label">
+                        Batch {displayedBatchIndex + 1}
+                      </p>
+                      <p
+                        className={`playlist-batch__status-pill playlist-batch__status-pill--${activeBatchStatus}`}
+                      >
+                        {formatBatchStatus(activeBatchStatus)}
+                      </p>
+                    </div>
                     <p className="playlist-batch__range">
                       {String(activeBatch[0].index + 1).padStart(2, "0")}-
                       {String(
@@ -417,8 +903,14 @@ export function PlaylistWorkspace({
                   </div>
 
                   <div className="playlist-batch__list">
-                    {activeBatch.map(({ song, index }) => {
-                      const isEditingTarget = editingTargetIndex === index;
+                    {activeBatch.map(({ song, index }, songIndex) => {
+                      const isEditingTarget =
+                        editingTarget?.globalIndex === index;
+                      const voteCount = getVoteCount(songwiseVote, songIndex);
+                      const canEditUpcomingBatch =
+                        !isVoteMode &&
+                        activeBatchStatus === "upcoming" &&
+                        (!isPublished || isCreator);
 
                       return (
                         <article
@@ -426,45 +918,85 @@ export function PlaylistWorkspace({
                           className={`playlist-song-card${
                             isEditingTarget ? " is-editing" : ""
                           }`}
+                          role="button"
+                          tabIndex={0}
+                          onClick={() => handleBatchSongClick(song)}
+                          onKeyDown={(event) =>
+                            handleSongCardKeyDown(event, () =>
+                              handleBatchSongClick(song)
+                            )
+                          }
                         >
-                              <div className="playlist-song-card__order">
-                                {String(index + 1).padStart(2, "0")}
-                              </div>
-                              <div className="playlist-song-card__body">
-                                <h4 className="playlist-song-card__title">
-                                  <MarqueeText text={song.title} />
-                                </h4>
-                                <p className="playlist-song-card__meta">
-                                  <MarqueeText
-                                    text={`${song.artists.join(", ")} · ${song.album}`}
-                                  />
-                                </p>
-                              </div>
+                          <div className="playlist-song-card__order">
+                            {String(index + 1).padStart(2, "0")}
+                          </div>
+                          <div className="playlist-song-card__body">
+                            <h4 className="playlist-song-card__title">
+                              <MarqueeText text={song.title} />
+                            </h4>
+                            <p className="playlist-song-card__meta">
+                              <MarqueeText text={formatSongMeta(song)} />
+                            </p>
+                          </div>
                           <div className="playlist-song-card__side">
                             <div className="playlist-song-card__duration">
                               {formatDuration(song.durationMs)}
                             </div>
                             <div className="playlist-song-card__controls">
-                              <a
-                                className="playlist-song-card__play-link"
-                                href={getSongPlaybackUrl(song)}
-                                target="_blank"
-                                rel="noreferrer"
-                                aria-label={`Play ${song.title} on YouTube`}
-                              >
-                                ▶
-                              </a>
                               <button
                                 type="button"
-                                className={`playlist-song-card__button playlist-song-card__button--wide${
-                                  isEditingTarget
-                                    ? " playlist-song-card__button--active"
-                                    : ""
-                                }`}
-                                onClick={() => setEditingTargetIndex(index)}
+                                className="playlist-song-card__play-link"
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  playSong(song);
+                                }}
+                                aria-label={`Play ${song.title}`}
                               >
-                                {isEditingTarget ? "Editing" : "Edit"}
+                                ▶
                               </button>
+                              {activeBatchStatus === "ongoing" ? (
+                                <>
+                                  <button
+                                    type="button"
+                                    className="playlist-song-card__button playlist-song-card__button--wide"
+                                    onClick={(event) => {
+                                      event.stopPropagation();
+                                      void handleVoteForSong(songIndex);
+                                    }}
+                                    disabled={mutationState !== "idle"}
+                                  >
+                                    Vote
+                                  </button>
+                                  <span className="playlist-song-card__pill">
+                                    {voteCount} votes
+                                  </span>
+                                </>
+                              ) : null}
+                              {canEditUpcomingBatch ? (
+                                <button
+                                  type="button"
+                                  className={`playlist-song-card__button playlist-song-card__button--wide${
+                                    isEditingTarget
+                                      ? " playlist-song-card__button--active"
+                                      : ""
+                                  }`}
+                                  onClick={(event) => {
+                                    event.stopPropagation();
+                                    setEditingTarget({
+                                      batchIndex: displayedBatchIndex,
+                                      globalIndex: index,
+                                      songIndex,
+                                    });
+                                  }}
+                                >
+                                  {isEditingTarget ? "Editing" : "Edit"}
+                                </button>
+                              ) : null}
+                              {activeBatchStatus === "completed" ? (
+                                <span className="playlist-song-card__pill">
+                                  Played
+                                </span>
+                              ) : null}
                             </div>
                           </div>
                         </article>
@@ -478,8 +1010,8 @@ export function PlaylistWorkspace({
                     Batches will appear here.
                   </p>
                   <p className="playlist-workspace__empty-copy">
-                    Load a playlist, reorder the full song list, and create
-                    batches from that order when you are ready.
+                    Load playlists, order the full song list, then create
+                    batches of 5 before publishing.
                   </p>
                 </div>
               )}
@@ -488,53 +1020,127 @@ export function PlaylistWorkspace({
         </div>
 
         <aside className="playlist-workspace__songs-pane">
+          <div className="playlist-workspace__session-bar">
+            <span className="playlist-workspace__pill">
+              Signed in as {authSession?.email}
+            </span>
+            <button
+              type="button"
+              className="playlist-workspace__secondary playlist-workspace__secondary--compact"
+              onClick={() => {
+                void handleSignOut();
+              }}
+            >
+              Sign Out
+            </button>
+          </div>
           <div className="playlist-workspace__header playlist-workspace__header--meta">
             <div className="playlist-workspace__brand">
               <div className="playlist-workspace__brand-copy">
                 <p className="playlist-workspace__eyebrow">YouTube</p>
                 <div className="playlist-workspace__brand-row">
                   <YouTubeGlyph />
-                  <h2 className="playlist-workspace__title">Playlist</h2>
+                  <h2 className="playlist-workspace__title">
+                    {isVoteMode ? "Choose Song" : "Playlist"}
+                  </h2>
                 </div>
               </div>
             </div>
-            <p className="playlist-workspace__copy">
-              Paste a YouTube playlist link, reorder the songs, edit any slot,
-              shuffle the stack, and publish a backend code for the current
-              sequence.
-            </p>
           </div>
 
-          {playlist ? (
-            <div className="playlist-workspace__meta">
-              <div>
-                <p className="playlist-workspace__meta-label">
-                  Loaded Playlist
-                </p>
-                <h3 className="playlist-workspace__meta-title">
-                  {playlist.title}
-                </h3>
-                <p className="playlist-workspace__meta-subtitle">
-                  {playlist.owner} · {songs.length} songs
+          {loadedPlaylists.length ? (
+            <div className="playlist-workspace__loaded-shell">
+              <div className="playlist-workspace__songs-header playlist-workspace__songs-header--tight">
+                <div>
+                  <p className="playlist-workspace__songs-eyebrow">
+                    Loaded Playlists
+                  </p>
+                  <h3 className="playlist-workspace__songs-title playlist-workspace__songs-title--compact">
+                    Added Sources
+                  </h3>
+                </div>
+                <p className="playlist-workspace__songs-count">
+                  {loadedPlaylists.length} playlists
                 </p>
               </div>
-              <a
-                className="playlist-workspace__meta-link"
-                href={playlist.sourceUrl}
-                target="_blank"
-                rel="noreferrer"
-              >
-                Open On YouTube
-              </a>
+              <div className="playlist-workspace__playlist-carousel-shell">
+                <button
+                  type="button"
+                  className="playlist-song-card__button playlist-workspace__carousel-button"
+                  onClick={() =>
+                    setLoadedPlaylistCursor((currentIndex) =>
+                      Math.max(currentIndex - 1, 0)
+                    )
+                  }
+                  disabled={loadedPlaylistCursor === 0}
+                  aria-label="Previous loaded playlist"
+                >
+                  &lt;
+                </button>
+                <div className="playlist-workspace__playlist-viewport">
+                  <div
+                    className="playlist-workspace__playlist-track"
+                    style={{
+                      transform: `translateX(-${loadedPlaylistCursor * 100}%)`,
+                    }}
+                  >
+                    {loadedPlaylists.map((playlist) => (
+                      <div
+                        key={playlist.id}
+                        className="playlist-workspace__playlist-slide"
+                      >
+                        <article
+                          className={`playlist-workspace__loaded-item${
+                            activeLoadedPlaylistId === playlist.id
+                              ? " is-active"
+                              : ""
+                          }`}
+                          onClick={() => setActiveLoadedPlaylistId(playlist.id)}
+                        >
+                          <div>
+                            <p className="playlist-workspace__loaded-name">
+                              {playlist.title}
+                            </p>
+                            <p className="playlist-workspace__loaded-meta">
+                              {playlist.owner} · {playlist.songs.length} songs
+                            </p>
+                          </div>
+                          <a
+                            className="playlist-workspace__loaded-link"
+                            href={playlist.sourceUrl}
+                            target="_blank"
+                            rel="noreferrer"
+                            onClick={(event) => event.stopPropagation()}
+                          >
+                            Open
+                          </a>
+                        </article>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  className="playlist-song-card__button playlist-workspace__carousel-button"
+                  onClick={() =>
+                    setLoadedPlaylistCursor((currentIndex) =>
+                      Math.min(currentIndex + 1, loadedPlaylists.length - 1)
+                    )
+                  }
+                  disabled={loadedPlaylistCursor >= loadedPlaylists.length - 1}
+                  aria-label="Next loaded playlist"
+                >
+                  &gt;
+                </button>
+              </div>
             </div>
           ) : (
-            <div className="playlist-workspace__empty">
+            <div className="playlist-workspace__empty playlist-workspace__empty--compact">
               <p className="playlist-workspace__empty-title">
                 No playlist loaded yet.
               </p>
               <p className="playlist-workspace__empty-copy">
-                The loader uses the YouTube Data API. If the request is
-                rejected, configure `YOUTUBE_API_KEY` on the server.
+                Add a public YouTube playlist to build the live voting stack.
               </p>
             </div>
           )}
@@ -543,85 +1149,92 @@ export function PlaylistWorkspace({
             <div>
               <p className="playlist-workspace__songs-eyebrow">Songs</p>
               <h3 className="playlist-workspace__songs-title">
-                Full Song List
+                {isVoteMode ? "Song Library" : "Full Song List"}
               </h3>
             </div>
             <div className="playlist-workspace__songs-side">
-              <button
-                type="button"
-                className="playlist-workspace__secondary"
-                onClick={shuffleSongs}
-                disabled={!hasSongs}
-              >
-                Random Shuffle
-              </button>
+              {!isVoteMode ? (
+                <button
+                  type="button"
+                  className="playlist-workspace__secondary"
+                  onClick={shuffleSongs}
+                  disabled={!hasSongs || isPublished || busy}
+                >
+                  Random Shuffle
+                </button>
+              ) : null}
               <p className="playlist-workspace__songs-count">
                 {hasSongs
                   ? `${filteredSongEntries.length} of ${songs.length} shown`
                   : "0 songs"}
               </p>
-              {publishedCode ? (
-                <p className="playlist-workspace__code playlist-workspace__code--align-end">
-                  Backend code: <span>{publishedCode}</span>
-                </p>
-              ) : null}
             </div>
           </div>
 
-          {editingTargetSong ? (
+          {editingTargetSong && !isVoteMode ? (
             <div className="playlist-workspace__edit-banner">
               <div>
                 <p className="playlist-workspace__edit-label">Edit Active</p>
                 <p className="playlist-workspace__edit-copy">
-                  Pick a song below to replace {editingTargetLabel}{" "}
-                  {editingTargetSong.title}.
+                  Choose a song from the full list to replace{" "}
+                  {editingTargetSong.title} in the upcoming batch.
                 </p>
               </div>
               <button
                 type="button"
                 className="playlist-workspace__banner-button"
-                onClick={() => setEditingTargetIndex(null)}
+                onClick={() => setEditingTarget(null)}
               >
                 Cancel
               </button>
             </div>
           ) : null}
 
-          <div className="playlist-workspace__search-row">
-            <label className="playlist-workspace__field playlist-workspace__field--search">
-              <span className="playlist-workspace__label">Search Songs</span>
-              <input
-                className="playlist-workspace__input"
-                type="search"
-                value={searchQuery}
-                onChange={(event) => setSearchQuery(event.target.value)}
-                placeholder="Search by title or artist"
-                disabled={!hasSongs}
-              />
-            </label>
-            <button
-              type="button"
-              className="playlist-workspace__secondary playlist-workspace__search-action"
-              onClick={createBatchesFromOrderedSongs}
-              disabled={!hasSongs}
-            >
-              Create Batches
-            </button>
-          </div>
+          {!isVoteMode ? (
+            <div className="playlist-workspace__search-row">
+              <label className="playlist-workspace__field playlist-workspace__field--search">
+                <span className="playlist-workspace__label">Search Songs</span>
+                <input
+                  className="playlist-workspace__input"
+                  type="search"
+                  value={searchQuery}
+                  onChange={(event) => setSearchQuery(event.target.value)}
+                  placeholder="Search by title or artist"
+                  disabled={!hasSongs}
+                />
+              </label>
+              <button
+                type="button"
+                className="playlist-workspace__secondary playlist-workspace__search-action"
+                onClick={createBatchesFromOrderedSongs}
+                disabled={!hasSongs || isPublished || busy}
+              >
+                Create Batches
+              </button>
+            </div>
+          ) : null}
 
           <div className="playlist-workspace__songs-scroll">
             {hasSongs ? (
               filteredSongEntries.length ? (
                 <div className="playlist-workspace__library-list">
                   {filteredSongEntries.map(({ song, index }) => {
-                    const canSelectReplacement = editingTargetIndex !== null;
+                    const canSelectReplacement = editingTarget !== null;
 
                     return (
                       <article
                         key={`${song.id}-${index}`}
                         className={`playlist-song-card playlist-song-card--library${
-                          canSelectReplacement ? " is-selectable" : ""
+                          canSelectReplacement && !isVoteMode ? " is-selectable" : ""
                         }`}
+                        role="button"
+                        tabIndex={0}
+                        onClick={() => handleLibrarySongClick(song)}
+                        onKeyDown={(event) =>
+                          handleSongCardKeyDown(event, () =>
+                            handleLibrarySongClick(song)
+                          )
+                        }
                       >
                         <div className="playlist-song-card__order">
                           {String(index + 1).padStart(2, "0")}
@@ -631,9 +1244,7 @@ export function PlaylistWorkspace({
                             <MarqueeText text={song.title} />
                           </h4>
                           <p className="playlist-song-card__meta">
-                            <MarqueeText
-                              text={`${song.artists.join(", ")} · ${song.album}`}
-                            />
+                            <MarqueeText text={formatSongMeta(song)} />
                           </p>
                         </div>
                         <div className="playlist-song-card__side">
@@ -641,38 +1252,56 @@ export function PlaylistWorkspace({
                             {formatDuration(song.durationMs)}
                           </div>
                           <div className="playlist-song-card__controls">
-                            <a
+                            <button
+                              type="button"
                               className="playlist-song-card__play-link"
-                              href={getSongPlaybackUrl(song)}
-                              target="_blank"
-                              rel="noreferrer"
-                              aria-label={`Play ${song.title} on YouTube`}
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                playSong(song);
+                              }}
+                              aria-label={`Play ${song.title}`}
                             >
                               ▶
-                            </a>
-                            <button
-                              type="button"
-                              className="playlist-song-card__button"
-                              onClick={() => moveSong(index, -1)}
-                              disabled={index === 0}
-                              aria-label={`Move ${song.title} up`}
-                            >
-                              ↑
                             </button>
-                            <button
-                              type="button"
-                              className="playlist-song-card__button"
-                              onClick={() => moveSong(index, 1)}
-                              disabled={index === songs.length - 1}
-                              aria-label={`Move ${song.title} down`}
-                            >
-                              ↓
-                            </button>
-                            {editingTargetIndex !== null ? (
+                            {!isVoteMode ? (
+                              <>
+                                <button
+                                  type="button"
+                                  className="playlist-song-card__button"
+                                  onClick={(event) => {
+                                    event.stopPropagation();
+                                    moveSong(index, -1);
+                                  }}
+                                  disabled={index === 0 || isPublished || busy}
+                                  aria-label={`Move ${song.title} up`}
+                                >
+                                  ↑
+                                </button>
+                                <button
+                                  type="button"
+                                  className="playlist-song-card__button"
+                                  onClick={(event) => {
+                                    event.stopPropagation();
+                                    moveSong(index, 1);
+                                  }}
+                                  disabled={
+                                    index === songs.length - 1 || isPublished || busy
+                                  }
+                                  aria-label={`Move ${song.title} down`}
+                                >
+                                  ↓
+                                </button>
+                              </>
+                            ) : null}
+                            {canSelectReplacement && !isVoteMode ? (
                               <button
                                 type="button"
                                 className="playlist-song-card__button playlist-song-card__button--wide playlist-song-card__button--select"
-                                onClick={() => selectReplacementSong(index)}
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  void selectReplacementSong(index);
+                                }}
+                                disabled={busy}
                               >
                                 Select
                               </button>
@@ -700,26 +1329,43 @@ export function PlaylistWorkspace({
                   Songs will appear here.
                 </p>
                 <p className="playlist-workspace__empty-copy">
-                  Load a playlist to review the full ordered list, create
-                  batches of 5, and edit any batch slot by selecting another
-                  song from the same playlist.
+                  Load one or more playlists to build the combined ordered song
+                  list and then create the voting batches.
                 </p>
               </div>
             )}
           </div>
         </aside>
-        </div>
-
-      <div className="playlist-workspace__publish">
-        <button
-          type="button"
-          className="playlist-workspace__publish-button"
-          onClick={handlePublishPlaylist}
-          disabled={!hasBatchSongs || requestState === "publishing"}
-        >
-          {requestState === "publishing" ? "Publishing..." : "Publish Playlist"}
-        </button>
       </div>
+
+      {!isVoteMode ? (
+        <div className="playlist-workspace__publish">
+          <button
+            type="button"
+            className="playlist-workspace__publish-button"
+            onClick={() => void handlePublishPlaylist()}
+            disabled={!hasBatchSongs || busy}
+          >
+            {mutationState === "publishing"
+              ? "Publishing..."
+              : "Publish Playlist"}
+          </button>
+        </div>
+      ) : null}
+
+      {playbackEmbedUrl ? (
+        <div className="playlist-workspace__player-shell" aria-hidden="true">
+          <iframe
+            key={playbackEmbedUrl}
+            className="playlist-workspace__player-frame"
+            src={playbackEmbedUrl}
+            title="YouTube Music player"
+            allow="autoplay; encrypted-media; picture-in-picture"
+          />
+        </div>
+      ) : null}
+        </>
+      )}
     </section>
   );
 }
@@ -734,13 +1380,39 @@ function YouTubeGlyph() {
           cy="32"
           r="16.8"
           stroke="#FFFFFF"
-          strokeWidth="2"
+          strokeWidth="2.4"
           fill="none"
         />
         <path d="M25.8 23.9L40.8 32L25.8 40.1V23.9Z" fill="#FFFFFF" />
       </svg>
     </div>
   );
+}
+
+function normalizePlaylistForWorkspace(playlist: PlaylistData, playlistIndex: number) {
+  const scopedPlaylistId = playlist.id || `loaded-playlist-${playlistIndex + 1}`;
+
+  return {
+    ...playlist,
+    id: scopedPlaylistId,
+    songs: playlist.songs.map((song, songIndex) => {
+      const songKey = song.sourceId ?? song.id ?? `${scopedPlaylistId}-${songIndex}`;
+
+      return {
+        ...song,
+        id: `${scopedPlaylistId}::${songIndex}::${songKey}`,
+        originPlaylistId: scopedPlaylistId,
+        originPlaylistTitle: playlist.title,
+      };
+    }),
+  };
+}
+
+function formatSongMeta(song: PlaylistSong) {
+  const baseMeta = `${song.artists.join(", ")} · ${song.album}`;
+  return song.originPlaylistTitle
+    ? `${baseMeta} · ${song.originPlaylistTitle}`
+    : baseMeta;
 }
 
 function formatDuration(durationMs: number) {
@@ -757,7 +1429,50 @@ function getSongPlaybackUrl(song: PlaylistSong) {
   }
 
   const searchQuery = encodeURIComponent(`${song.title} ${song.artists.join(" ")}`);
-  return `https://www.youtube.com/results?search_query=${searchQuery}`;
+  return `https://music.youtube.com/search?q=${searchQuery}`;
+}
+
+function getSongEmbedUrl(song: PlaylistSong | null, playbackToken: number) {
+  if (!song) {
+    return null;
+  }
+
+  const videoId = getSongVideoId(song);
+
+  if (!videoId) {
+    return null;
+  }
+
+  return `https://www.youtube.com/embed/${videoId}?autoplay=1&playsinline=1&rel=0&modestbranding=1&octavePlayback=${playbackToken}`;
+}
+
+function getSongVideoId(song: PlaylistSong) {
+  if (song.sourceId) {
+    return song.sourceId;
+  }
+
+  if (!song.sourceUrl) {
+    return null;
+  }
+
+  try {
+    const url = new URL(song.sourceUrl);
+    return url.searchParams.get("v");
+  } catch {
+    return null;
+  }
+}
+
+function handleSongCardKeyDown(
+  event: KeyboardEvent<HTMLElement>,
+  onActivate: () => void
+) {
+  if (event.key !== "Enter" && event.key !== " ") {
+    return;
+  }
+
+  event.preventDefault();
+  onActivate();
 }
 
 function chunkSongEntries(entries: SongEntry[], chunkSize: number) {
@@ -768,6 +1483,78 @@ function chunkSongEntries(entries: SongEntry[], chunkSize: number) {
   }
 
   return batches;
+}
+
+function flattenSongBatches(batches: PlaylistSong[][]) {
+  return batches.flat();
+}
+
+function createVoteSnapshot(currentBatch: SongEntry[]) {
+  return currentBatch.map((_, songIndex) => ({
+    [String(songIndex + 1)]: 0,
+  }));
+}
+
+function getVoteCount(songwiseVote: SongwiseVote[], songIndex: number) {
+  const voteKey = String(songIndex + 1);
+  return songwiseVote[songIndex]?.[voteKey] ?? 0;
+}
+
+function getBatchStatus(
+  batchIndex: number,
+  currentBatchIndex: number,
+  totalBatches: number
+): BatchStatus {
+  if (!totalBatches) {
+    return "upcoming";
+  }
+
+  if (currentBatchIndex >= totalBatches) {
+    return "completed";
+  }
+
+  if (batchIndex < currentBatchIndex) {
+    return "completed";
+  }
+
+  if (batchIndex === currentBatchIndex) {
+    return "ongoing";
+  }
+
+  return "upcoming";
+}
+
+function formatBatchStatus(status: BatchStatus) {
+  if (status === "ongoing") {
+    return "Ongoing";
+  }
+
+  if (status === "completed") {
+    return "Completed";
+  }
+
+  return "Upcoming";
+}
+
+function createExampleSong(
+  id: string,
+  title: string,
+  artists: string[],
+  album: string,
+  durationMs: number
+): PlaylistSong {
+  return {
+    album,
+    artists,
+    artworkUrl: null,
+    durationMs,
+    id,
+    originPlaylistId: EXAMPLE_PLAYLIST_ID,
+    originPlaylistTitle: EXAMPLE_PLAYLIST_TITLE,
+    sourceId: null,
+    sourceUrl: null,
+    title,
+  };
 }
 
 function MarqueeText({ text }: { text: string }) {
@@ -901,23 +1688,4 @@ function MarqueeText({ text }: { text: string }) {
       </span>
     </span>
   );
-}
-
-function createExampleSong(
-  id: string,
-  title: string,
-  artists: string[],
-  album: string,
-  durationMs: number
-): PlaylistSong {
-  return {
-    album,
-    artists,
-    artworkUrl: null,
-    durationMs,
-    id,
-    sourceId: null,
-    sourceUrl: null,
-    title,
-  };
 }

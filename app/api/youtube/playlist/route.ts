@@ -28,18 +28,18 @@ export async function POST(request: Request) {
     }
 
     if (error instanceof YouTubeApiError) {
-      const status =
-        error.status === 401 || error.status === 403 ? 502 : error.status;
-
       return NextResponse.json(
         {
           error:
-            error.status === 401 || error.status === 403
-              ? "YouTube rejected the playlist lookup. Use a public playlist and a valid YouTube Data API key."
+            error.status === 401 || error.status === 403 || error.status === 429
+              ? "YouTube rejected the playlist lookup. Use a public playlist link and try again."
               : error.message,
         },
         {
-          status,
+          status:
+            error.status === 401 || error.status === 403
+              ? 502
+              : error.status,
         }
       );
     }

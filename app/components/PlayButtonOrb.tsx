@@ -130,7 +130,7 @@ export function PlayButtonOrb({
         <button
           type="button"
           className="play-orb-button"
-          aria-label="Play"
+          aria-label={isActivated ? "Pause" : "Play"}
           aria-pressed={isActivated}
           disabled={isDisabled}
           onClick={() => {
@@ -150,7 +150,11 @@ export function PlayButtonOrb({
           }}
           onBlur={() => setIsActive(false)}
         >
-          <span className="play-orb-icon" />
+          <span
+            className={`play-orb-icon${
+              isActivated ? " play-orb-icon--pause" : " play-orb-icon--play"
+            }`}
+          />
         </button>
       </div>
     </div>

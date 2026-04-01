@@ -5,12 +5,14 @@ import { useEffect, useRef } from "react";
 const BASE_FONT_SIZE = 160;
 const TARGET_WIDTH_RATIO = 0.8;
 
+type WordmarkMode = "home" | "choice" | "hidden";
+
 type WordmarkOverlayProps = {
-  isVisible?: boolean;
+  mode?: WordmarkMode;
 };
 
 export function WordmarkOverlay({
-  isVisible = true,
+  mode = "home",
 }: WordmarkOverlayProps) {
   const textRef = useRef<HTMLHeadingElement>(null);
 
@@ -34,6 +36,10 @@ export function WordmarkOverlay({
       );
 
       text.style.fontSize = `${nextSize}px`;
+      document.documentElement.style.setProperty(
+        "--octave-wordmark-size",
+        `${nextSize}px`
+      );
     };
 
     const initialize = async () => {
@@ -54,7 +60,7 @@ export function WordmarkOverlay({
 
   return (
     <div
-      className={`wordmark-overlay${isVisible ? " is-visible" : " is-hidden"}`}
+      className={`wordmark-overlay wordmark-overlay--${mode}`}
       aria-hidden="true"
     >
       <div className="wordmark-shell">

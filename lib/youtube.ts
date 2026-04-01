@@ -2,66 +2,42 @@ import "server-only";
 
 import type { PlaylistData, PlaylistSong } from "@/lib/playlist-types";
 
-const YOUTUBE_API_BASE = "https://www.googleapis.com/youtube/v3";
-
-type YouTubeThumbnailSet = {
-  default?: { url?: string | null } | null;
-  medium?: { url?: string | null } | null;
-  high?: { url?: string | null } | null;
-  standard?: { url?: string | null } | null;
-  maxres?: { url?: string | null } | null;
+const YOUTUBE_WEB_BASE = "https://www.youtube.com";
+const YOUTUBE_MUSIC_BASE = "https://music.youtube.com";
+const YOUTUBE_INNERTUBE_BROWSE = "https://www.youtube.com/youtubei/v1/browse";
+const YOUTUBE_MUSIC_INNERTUBE_BROWSE =
+  "https://music.youtube.com/youtubei/v1/browse";
+const REQUEST_HEADERS = {
+  "accept-language": "en-US,en;q=0.9",
+  "user-agent":
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
 };
 
-type YouTubePlaylistMetadata = {
-  id?: string | null;
-  snippet?: {
-    channelTitle?: string | null;
-    description?: string | null;
-    thumbnails?: YouTubeThumbnailSet | null;
-    title?: string | null;
-  } | null;
+type YouTubeClientName = "WEB" | "WEB_REMIX";
+type PlaylistMetadata = {
+  description: string | null;
+  imageUrl: string | null;
+  owner: string;
+  title: string;
 };
 
-type YouTubePlaylistItemsResponse = {
-  items?: YouTubePlaylistItem[];
-  nextPageToken?: string | null;
+type YouTubePlaylistPageData = {
+  initialData: Record<string, unknown>;
+  innertubeApiKey: string;
+  visitorData: string | null;
+  clientVersion: string;
+  sourceUrl: string;
+  browseEndpoint: string;
+  clientName: YouTubeClientName;
 };
 
-type YouTubePlaylistItem = {
-  contentDetails?: {
-    videoId?: string | null;
-  } | null;
-  id?: string | null;
-  snippet?: {
-    channelTitle?: string | null;
-    description?: string | null;
-    resourceId?: {
-      videoId?: string | null;
+type ContinuationResponse = {
+  onResponseReceivedActions?: Array<{
+    appendContinuationItemsAction?: {
+      continuationItems?: Array<Record<string, unknown>>;
     } | null;
-    thumbnails?: YouTubeThumbnailSet | null;
-    title?: string | null;
-    videoOwnerChannelTitle?: string | null;
-  } | null;
-  status?: {
-    privacyStatus?: string | null;
-  } | null;
-};
-
-type YouTubeVideo = {
-  contentDetails?: {
-    duration?: string | null;
-  } | null;
-  id?: string | null;
-  snippet?: {
-    channelTitle?: string | null;
-    thumbnails?: YouTubeThumbnailSet | null;
-    title?: string | null;
-  } | null;
-};
-
-type YouTubeVideosResponse = {
-  items?: YouTubeVideo[];
-};
+  }>;
+} & Record<string, unknown>;
 
 class YouTubeConfigError extends Error {}
 class YouTubeApiError extends Error {
@@ -98,220 +74,847 @@ export async function fetchYouTubePlaylist(
   input: string
 ): Promise<PlaylistData> {
   const playlistId = parseYouTubePlaylistId(input);
-  const apiKey = getYouTubeApiKey();
-  const playlistMetadataUrl = new URL(`${YOUTUBE_API_BASE}/playlists`);
+  const defaultMetadata = getDefaultPlaylistMetadata(playlistId);
+  let metadata = defaultMetadata;
+  let songs: PlaylistSong[] = [];
+  let lastError: unknown = null;
+  let sourceUrl = `${YOUTUBE_MUSIC_BASE}/playlist?list=${playlistId}`;
 
-  playlistMetadataUrl.searchParams.set("part", "snippet");
-  playlistMetadataUrl.searchParams.set("id", playlistId);
-  playlistMetadataUrl.searchParams.set("maxResults", "1");
-  playlistMetadataUrl.searchParams.set("key", apiKey);
-
-  const playlistMetadataResponse = await youTubeFetch<{
-    items?: YouTubePlaylistMetadata[];
-  }>(playlistMetadataUrl.toString());
-  const playlistMetadata = playlistMetadataResponse.items?.[0];
-
-  if (!playlistMetadata) {
-    throw new YouTubeApiError("That YouTube playlist could not be found.", 404);
+  try {
+    const playlistPage = await fetchPlaylistPageData(playlistId);
+    sourceUrl = playlistPage.sourceUrl;
+    metadata = extractPlaylistMetadata(playlistPage.initialData, playlistId);
+    songs = await fetchAllPlaylistSongs(
+      playlistPage,
+      playlistId,
+      metadata.title,
+      getInitialPlaylistItems
+    );
+  } catch (error) {
+    lastError = error;
   }
 
-  const playlistTitle =
-    sanitizeYouTubeText(playlistMetadata.snippet?.title ?? null) ??
-    "YouTube Playlist";
-  const playlistItems = await fetchAllPlaylistItems(playlistId, apiKey);
-  const videosById = await fetchVideosById(
-    playlistItems
-      .map(
-        (item) =>
-          item.contentDetails?.videoId ?? item.snippet?.resourceId?.videoId ?? null
-      )
-      .filter((videoId): videoId is string => Boolean(videoId)),
-    apiKey
-  );
+  if (!songs.length) {
+    try {
+      const musicPlaylistPage = await fetchMusicPlaylistPageData(playlistId);
+      sourceUrl = musicPlaylistPage.sourceUrl;
+      const musicMetadata = extractMusicPlaylistMetadata(
+        musicPlaylistPage.initialData,
+        playlistId
+      );
+      metadata = mergePlaylistMetadata(metadata, musicMetadata, playlistId);
+      songs = await fetchAllPlaylistSongs(
+        musicPlaylistPage,
+        playlistId,
+        metadata.title,
+        getInitialMusicPlaylistItems
+      );
+    } catch (error) {
+      lastError = error;
+    }
+  }
 
-  const songs = playlistItems
-    .map((item, index) => mapPlaylistSong(item, videosById, playlistTitle, index))
-    .filter((song): song is PlaylistSong => song !== null);
+  if (!songs.length) {
+    if (lastError instanceof Error) {
+      throw lastError;
+    }
+
+    throw new YouTubeApiError(
+      "Could not find any songs inside this YouTube playlist.",
+      404
+    );
+  }
 
   return {
-    description: sanitizeYouTubeText(playlistMetadata.snippet?.description ?? null),
-    id: playlistMetadata.id ?? playlistId,
-    imageUrl: pickThumbnailUrl(playlistMetadata.snippet?.thumbnails ?? null),
-    owner:
-      sanitizeYouTubeText(playlistMetadata.snippet?.channelTitle ?? null) ??
-      "YouTube",
+    description: metadata.description,
+    id: playlistId,
+    imageUrl: metadata.imageUrl,
+    owner: metadata.owner,
     songs,
-    sourceUrl: `https://www.youtube.com/playlist?list=${playlistId}`,
-    title: playlistTitle,
+    sourceUrl,
+    title: metadata.title,
   };
 }
 
 export { YouTubeApiError, YouTubeConfigError };
 
-function getYouTubeApiKey() {
-  const apiKey = process.env.YOUTUBE_API_KEY?.trim();
-
-  if (!apiKey) {
-    throw new YouTubeConfigError(
-      "YouTube credentials are not configured. Set YOUTUBE_API_KEY on the server."
-    );
-  }
-
-  return apiKey;
-}
-
-async function fetchAllPlaylistItems(playlistId: string, apiKey: string) {
-  const items: YouTubePlaylistItem[] = [];
-  let nextPageToken: string | null = null;
-
-  do {
-    const pageUrl = new URL(`${YOUTUBE_API_BASE}/playlistItems`);
-
-    pageUrl.searchParams.set("part", "snippet,contentDetails,status");
-    pageUrl.searchParams.set("playlistId", playlistId);
-    pageUrl.searchParams.set("maxResults", "50");
-    pageUrl.searchParams.set("key", apiKey);
-
-    if (nextPageToken) {
-      pageUrl.searchParams.set("pageToken", nextPageToken);
-    }
-
-    const response =
-      await youTubeFetch<YouTubePlaylistItemsResponse>(pageUrl.toString());
-
-    items.push(...(response.items ?? []));
-    nextPageToken = response.nextPageToken ?? null;
-  } while (nextPageToken);
-
-  return items;
-}
-
-async function fetchVideosById(videoIds: string[], apiKey: string) {
-  const uniqueIds = Array.from(new Set(videoIds));
-  const videosById = new Map<string, YouTubeVideo>();
-
-  for (let index = 0; index < uniqueIds.length; index += 50) {
-    const batch = uniqueIds.slice(index, index + 50);
-
-    if (!batch.length) {
-      continue;
-    }
-
-    const videosUrl = new URL(`${YOUTUBE_API_BASE}/videos`);
-    videosUrl.searchParams.set("part", "contentDetails,snippet");
-    videosUrl.searchParams.set("id", batch.join(","));
-    videosUrl.searchParams.set("maxResults", "50");
-    videosUrl.searchParams.set("key", apiKey);
-
-    const response = await youTubeFetch<YouTubeVideosResponse>(
-      videosUrl.toString()
-    );
-
-    for (const video of response.items ?? []) {
-      if (video.id) {
-        videosById.set(video.id, video);
-      }
-    }
-  }
-
-  return videosById;
-}
-
-async function youTubeFetch<T>(url: string) {
-  const response = await fetch(url, {
+async function fetchPlaylistPageData(
+  playlistId: string
+): Promise<YouTubePlaylistPageData> {
+  const sourceUrl = `${YOUTUBE_MUSIC_BASE}/playlist?list=${playlistId}`;
+  const pageUrl = `${YOUTUBE_WEB_BASE}/playlist?list=${playlistId}&hl=en`;
+  const response = await fetch(pageUrl, {
     cache: "no-store",
+    headers: REQUEST_HEADERS,
   });
 
   if (!response.ok) {
-    const errorPayload = (await safeJson(response)) as
-      | {
-          error?: {
-            code?: number;
-            message?: string;
-          };
-        }
-      | undefined;
-
     throw new YouTubeApiError(
-      errorPayload?.error?.message ??
-        "YouTube rejected the playlist request.",
+      "YouTube rejected the playlist page request.",
       response.status
     );
   }
 
-  return (await response.json()) as T;
+  const html = await response.text();
+  const initialData = extractJsonFromHtml<Record<string, unknown>>(
+    html,
+    /var ytInitialData = (\{.*?\});/
+  );
+  const innertubeApiKey = extractMatch(
+    html,
+    /"INNERTUBE_API_KEY":"([^"]+)"/,
+    "Could not find the embedded YouTube browse key."
+  );
+  const clientVersion = extractMatch(
+    html,
+    /"INNERTUBE_CONTEXT_CLIENT_VERSION":"([^"]+)"/,
+    "Could not find the embedded YouTube client version."
+  );
+  const visitorDataMatch = html.match(/"visitorData":"([^"]+)"/);
+
+  return {
+    initialData,
+    innertubeApiKey,
+    visitorData: visitorDataMatch?.[1] ?? null,
+    clientVersion,
+    sourceUrl,
+    browseEndpoint: YOUTUBE_INNERTUBE_BROWSE,
+    clientName: "WEB",
+  };
+}
+
+async function fetchMusicPlaylistPageData(
+  playlistId: string
+): Promise<YouTubePlaylistPageData> {
+  const sourceUrl = `${YOUTUBE_MUSIC_BASE}/playlist?list=${playlistId}`;
+  const response = await fetch(sourceUrl, {
+    cache: "no-store",
+    headers: REQUEST_HEADERS,
+  });
+
+  if (!response.ok) {
+    throw new YouTubeApiError(
+      "YouTube Music rejected the playlist page request.",
+      response.status
+    );
+  }
+
+  const html = await response.text();
+  const initialData = extractMusicBrowseDataFromHtml(html);
+  const innertubeApiKey = extractMatch(
+    html,
+    /"INNERTUBE_API_KEY":"([^"]+)"/,
+    "Could not find the embedded YouTube Music browse key."
+  );
+  const clientVersion = extractMatch(
+    html,
+    /"INNERTUBE_CONTEXT_CLIENT_VERSION":"([^"]+)"/,
+    "Could not find the embedded YouTube Music client version."
+  );
+  const visitorDataMatch =
+    html.match(/"VISITOR_DATA":"([^"]+)"/) ??
+    html.match(/"visitorData":"([^"]+)"/);
+
+  return {
+    initialData,
+    innertubeApiKey,
+    visitorData: visitorDataMatch?.[1] ?? null,
+    clientVersion,
+    sourceUrl,
+    browseEndpoint: YOUTUBE_MUSIC_INNERTUBE_BROWSE,
+    clientName: "WEB_REMIX",
+  };
+}
+
+async function fetchAllPlaylistSongs(
+  playlistPage: YouTubePlaylistPageData,
+  playlistId: string,
+  playlistTitle: string,
+  getInitialItems: (
+    initialData: Record<string, unknown>
+  ) => Array<Record<string, unknown>>
+): Promise<PlaylistSong[]> {
+  const songs: PlaylistSong[] = extractPlaylistSongsFromItems(
+    getInitialItems(playlistPage.initialData),
+    playlistId,
+    playlistTitle
+  );
+  let continuationToken = getPlaylistContinuationToken(playlistPage.initialData);
+
+  while (continuationToken) {
+    const continuationItems = await fetchContinuationItems(
+      playlistPage,
+      continuationToken
+    );
+    songs.push(
+      ...extractPlaylistSongsFromItems(
+        continuationItems,
+        playlistId,
+        playlistTitle
+      )
+    );
+    continuationToken = getPlaylistContinuationToken({ items: continuationItems });
+  }
+
+  return songs;
+}
+
+async function fetchContinuationItems(
+  playlistPage: YouTubePlaylistPageData,
+  continuationToken: string
+) {
+  const payload = {
+    context: {
+      client: {
+        clientName: playlistPage.clientName,
+        clientVersion: playlistPage.clientVersion,
+        ...(playlistPage.visitorData
+          ? { visitorData: playlistPage.visitorData }
+          : {}),
+      },
+    },
+    continuation: continuationToken,
+  };
+
+  const response = await fetch(
+    `${playlistPage.browseEndpoint}?key=${encodeURIComponent(
+      playlistPage.innertubeApiKey
+    )}`,
+    {
+      method: "POST",
+      cache: "no-store",
+      headers: {
+        ...REQUEST_HEADERS,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify(payload),
+    }
+  );
+
+  if (!response.ok) {
+    throw new YouTubeApiError(
+      "YouTube rejected the playlist continuation request.",
+      response.status
+    );
+  }
+
+  const data = (await response.json()) as ContinuationResponse;
+
+  return (
+    data.onResponseReceivedActions?.[0]?.appendContinuationItemsAction
+      ?.continuationItems ?? []
+  );
+}
+
+function extractPlaylistMetadata(
+  initialData: Record<string, unknown>,
+  playlistId: string
+): PlaylistMetadata {
+  const sidebarPrimary = findFirstRenderer(
+    initialData,
+    "playlistSidebarPrimaryInfoRenderer"
+  ) as Record<string, unknown> | null;
+  const sidebarSecondary = findFirstRenderer(
+    initialData,
+    "playlistSidebarSecondaryInfoRenderer"
+  ) as Record<string, unknown> | null;
+  const metadataRenderer = findFirstRenderer(
+    initialData,
+    "playlistMetadataRenderer"
+  ) as Record<string, unknown> | null;
+  const pageHeader = findFirstRenderer(
+    initialData,
+    "pageHeaderRenderer"
+  ) as Record<string, unknown> | null;
+
+  const title =
+    getText(sidebarPrimary?.title) ??
+    getString(metadataRenderer?.title) ??
+    getString(pageHeader?.pageTitle) ??
+    "YouTube Playlist";
+
+  const description =
+    getText(metadataRenderer?.description) ??
+    getText(sidebarPrimary?.description) ??
+    null;
+
+  const owner =
+    getText(getObject(sidebarSecondary, "videoOwner.videoOwnerRenderer.title")) ??
+    getText(sidebarPrimary?.ownerText) ??
+    extractOwnerFromPageHeader(pageHeader) ??
+    "YouTube Music";
+
+  const imageUrl =
+    pickThumbnailUrl(
+      getObject(
+        sidebarPrimary?.thumbnailRenderer,
+        "playlistVideoThumbnailRenderer.thumbnail"
+      )
+    ) ??
+    pickThumbnailUrl(
+      getObject(pageHeader, "content.pageHeaderViewModel.heroImage.contentPreviewImageViewModel.image")
+    ) ??
+    `https://i.ytimg.com/vi/${playlistId}/hqdefault.jpg`;
+
+  return {
+    description: sanitizeYouTubeText(description),
+    imageUrl,
+    owner: sanitizeYouTubeText(owner) ?? "YouTube Music",
+    title: sanitizeYouTubeText(title) ?? "YouTube Playlist",
+  };
+}
+
+function extractMusicPlaylistMetadata(
+  initialData: Record<string, unknown>,
+  playlistId: string
+): PlaylistMetadata {
+  const microformat = findFirstRenderer(
+    initialData,
+    "microformatDataRenderer"
+  ) as Record<string, unknown> | null;
+  const header = findFirstRenderer(
+    initialData,
+    "musicResponsiveHeaderRenderer"
+  ) as Record<string, unknown> | null;
+
+  return {
+    description:
+      sanitizeYouTubeText(getString(microformat?.description)) ??
+      sanitizeYouTubeText(getText(header?.description)) ??
+      null,
+    imageUrl:
+      pickThumbnailUrl(microformat?.thumbnail) ??
+      pickThumbnailUrl(
+        getObject(header, "thumbnail.musicThumbnailRenderer.thumbnail")
+      ) ??
+      `https://i.ytimg.com/vi/${playlistId}/hqdefault.jpg`,
+    owner:
+      sanitizeYouTubeText(
+        getText(getObject(header, "subtitle.runs.0.text")) ??
+          getText(getObject(header, "straplineTextOne"))
+      ) ?? "YouTube Music",
+    title:
+      sanitizeYouTubeText(getString(microformat?.title)) ??
+      sanitizeYouTubeText(getText(header?.title)) ??
+      "YouTube Playlist",
+  };
+}
+
+function getInitialPlaylistItems(initialData: Record<string, unknown>) {
+  const playlistVideoListRenderer = findFirstRenderer(
+    initialData,
+    "playlistVideoListRenderer"
+  ) as Record<string, unknown> | null;
+  const contents = playlistVideoListRenderer?.contents;
+
+  return Array.isArray(contents)
+    ? (contents.filter(isRecord) as Array<Record<string, unknown>>)
+    : [];
+}
+
+function getInitialMusicPlaylistItems(initialData: Record<string, unknown>) {
+  const musicPlaylistShelfRenderer = findFirstRenderer(
+    initialData,
+    "musicPlaylistShelfRenderer"
+  ) as Record<string, unknown> | null;
+  const contents = musicPlaylistShelfRenderer?.contents;
+
+  return Array.isArray(contents)
+    ? (contents.filter(isRecord) as Array<Record<string, unknown>>)
+    : [];
+}
+
+function extractPlaylistSongsFromItems(
+  items: Array<Record<string, unknown>>,
+  playlistId: string,
+  playlistTitle: string
+): PlaylistSong[] {
+  const songs: PlaylistSong[] = [];
+
+  items.forEach((item, index) => {
+    const song =
+      mapPlaylistSong(item, playlistId, playlistTitle, index) ??
+      mapMusicPlaylistSong(item, playlistId, playlistTitle, index);
+
+    if (song) {
+      songs.push(song);
+    }
+  });
+
+  return songs;
 }
 
 function mapPlaylistSong(
-  item: YouTubePlaylistItem,
-  videosById: Map<string, YouTubeVideo>,
+  item: Record<string, unknown>,
+  playlistId: string,
   playlistTitle: string,
   index: number
 ) {
-  const videoId =
-    item.contentDetails?.videoId ?? item.snippet?.resourceId?.videoId ?? null;
-  const video = videoId ? videosById.get(videoId) : undefined;
-  const title = sanitizeYouTubeText(
-    video?.snippet?.title ?? item.snippet?.title ?? null
-  );
+  const renderer = item.playlistVideoRenderer;
 
-  if (!title || title === "Private video" || title === "Deleted video") {
+  if (!isRecord(renderer)) {
     return null;
   }
 
-  const channelTitle =
-    sanitizeYouTubeText(
-      video?.snippet?.channelTitle ??
-        item.snippet?.videoOwnerChannelTitle ??
-        item.snippet?.channelTitle ??
-        null
-    ) ?? "Unknown Channel";
+  const title = sanitizeYouTubeText(getText(renderer.title));
+  const videoId = getString(renderer.videoId);
+
+  if (!title || !videoId) {
+    return null;
+  }
+
+  if (title === "Private video" || title === "Deleted video") {
+    return null;
+  }
+
+  const artist =
+    sanitizeYouTubeText(getText(renderer.shortBylineText)) ?? "Unknown Channel";
+  const durationSeconds = Number(renderer.lengthSeconds ?? 0);
 
   return {
     album: playlistTitle,
-    artists: [channelTitle],
-    artworkUrl:
-      pickThumbnailUrl(video?.snippet?.thumbnails ?? null) ??
-      pickThumbnailUrl(item.snippet?.thumbnails ?? null),
-    durationMs: parseYouTubeDuration(video?.contentDetails?.duration ?? null),
-    id: item.id ?? `${videoId ?? title}-${index}`,
+    artists: [artist],
+    artworkUrl: pickThumbnailUrl(renderer.thumbnail),
+    durationMs: Number.isFinite(durationSeconds) ? durationSeconds * 1000 : 0,
+    id: getString(renderer.videoId) ?? `${playlistId}-${index}`,
     sourceId: videoId,
-    sourceUrl: videoId ? `https://www.youtube.com/watch?v=${videoId}` : null,
+    sourceUrl: `https://music.youtube.com/watch?v=${videoId}&list=${playlistId}`,
     title,
   };
 }
 
-function parseYouTubeDuration(duration: string | null) {
-  if (!duration) {
-    return 0;
+function mapMusicPlaylistSong(
+  item: Record<string, unknown>,
+  playlistId: string,
+  playlistTitle: string,
+  index: number
+) {
+  const renderer = item.musicResponsiveListItemRenderer;
+
+  if (!isRecord(renderer)) {
+    return null;
   }
 
-  const match = duration.match(
-    /^P(?:(\d+)D)?T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?$/i
+  const title = sanitizeYouTubeText(
+    getText(getMusicColumnText(renderer.flexColumns, 0))
+  );
+  const videoId =
+    getString(getObject(renderer, "playlistItemData.videoId")) ??
+    getString(
+      getObject(
+        renderer,
+        "overlay.musicItemThumbnailOverlayRenderer.content.musicPlayButtonRenderer.playNavigationEndpoint.watchEndpoint.videoId"
+      )
+    );
+
+  if (!title || !videoId) {
+    return null;
+  }
+
+  if (title === "Private video" || title === "Deleted video") {
+    return null;
+  }
+
+  const artists = extractMusicArtists(renderer);
+  const durationMs = parseDurationToMs(
+    sanitizeYouTubeText(getText(getMusicColumnText(renderer.fixedColumns, 0)))
   );
 
-  if (!match) {
+  return {
+    album: playlistTitle,
+    artists: artists.length ? artists : ["Unknown Artist"],
+    artworkUrl:
+      pickThumbnailUrl(
+        getObject(renderer, "thumbnail.musicThumbnailRenderer.thumbnail")
+      ) ?? pickThumbnailUrl(renderer.thumbnail),
+    durationMs,
+    id:
+      getString(getObject(renderer, "playlistItemData.playlistSetVideoId")) ??
+      videoId ??
+      `${playlistId}-${index}`,
+    sourceId: videoId,
+    sourceUrl: `${YOUTUBE_MUSIC_BASE}/watch?v=${videoId}&list=${playlistId}`,
+    title,
+  };
+}
+
+function getPlaylistContinuationToken(source: Record<string, unknown>) {
+  const continuations = findAllRenderers(source, "continuationItemRenderer");
+
+  for (const continuation of continuations) {
+    if (!isRecord(continuation)) {
+      continue;
+    }
+
+    const directToken = getString(
+      getObject(
+        continuation.continuationEndpoint,
+        "continuationCommand.token"
+      )
+    );
+
+    if (directToken) {
+      return directToken;
+    }
+
+    const commands = getArray(
+      getObject(continuation.continuationEndpoint, "commandExecutorCommand.commands")
+    );
+
+    for (const command of commands) {
+      const wrappedToken = getString(
+        getObject(command, "continuationCommand.token")
+      );
+
+      if (wrappedToken) {
+        return wrappedToken;
+      }
+    }
+  }
+
+  return null;
+}
+
+function extractOwnerFromPageHeader(pageHeader: Record<string, unknown> | null) {
+  const metadataRows = getArray(
+    getObject(
+      pageHeader,
+      "content.pageHeaderViewModel.metadata.contentMetadataViewModel.metadataRows"
+    )
+  );
+
+  for (const row of metadataRows) {
+    const parts = getArray((row as Record<string, unknown>).metadataParts);
+
+    for (const part of parts) {
+      const avatarText = getText((part as Record<string, unknown>).avatarStack);
+
+      if (avatarText) {
+        return avatarText.replace(/^by\s+/i, "");
+      }
+    }
+  }
+
+  return null;
+}
+
+function findFirstRenderer(
+  source: unknown,
+  key: string
+): Record<string, unknown> | null {
+  const matches = findAllRenderers(source, key);
+
+  return matches.length ? matches[0] : null;
+}
+
+function findAllRenderers(
+  source: unknown,
+  key: string,
+  matches: Array<Record<string, unknown>> = []
+): Array<Record<string, unknown>> {
+  if (Array.isArray(source)) {
+    for (const item of source) {
+      findAllRenderers(item, key, matches);
+    }
+
+    return matches;
+  }
+
+  if (!isRecord(source)) {
+    return matches;
+  }
+
+  for (const [entryKey, value] of Object.entries(source)) {
+    if (entryKey === key && isRecord(value)) {
+      matches.push(value);
+    }
+
+    findAllRenderers(value, key, matches);
+  }
+
+  return matches;
+}
+
+function extractMusicBrowseDataFromHtml(html: string) {
+  const pushPattern =
+    /initialData\.push\(\{path: '([^']+)', params: JSON\.parse\('((?:[^'\\]|\\.)*)'\), data: '((?:[^'\\]|\\.)*)'\}\);/g;
+
+  for (const match of html.matchAll(pushPattern)) {
+    const path = decodeJavaScriptStringLiteral(match[1]);
+
+    if (path !== "/browse") {
+      continue;
+    }
+
+    const data = decodeJavaScriptStringLiteral(match[3]);
+    return JSON.parse(data) as Record<string, unknown>;
+  }
+
+  throw new YouTubeApiError(
+    "Could not read the YouTube Music playlist page data.",
+    502
+  );
+}
+
+function extractJsonFromHtml<T>(html: string, pattern: RegExp) {
+  const match = html.match(pattern);
+
+  if (!match?.[1]) {
+    throw new YouTubeApiError(
+      "Could not read the YouTube playlist page data.",
+      502
+    );
+  }
+
+  return JSON.parse(match[1]) as T;
+}
+
+function extractMatch(html: string, pattern: RegExp, message: string) {
+  const match = html.match(pattern);
+
+  if (!match?.[1]) {
+    throw new YouTubeApiError(message, 502);
+  }
+
+  return match[1];
+}
+
+function getDefaultPlaylistMetadata(playlistId: string): PlaylistMetadata {
+  return {
+    description: null,
+    imageUrl: `https://i.ytimg.com/vi/${playlistId}/hqdefault.jpg`,
+    owner: "YouTube Music",
+    title: "YouTube Playlist",
+  };
+}
+
+function mergePlaylistMetadata(
+  current: PlaylistMetadata,
+  incoming: PlaylistMetadata,
+  playlistId: string
+) {
+  const fallbackImage = `https://i.ytimg.com/vi/${playlistId}/hqdefault.jpg`;
+
+  return {
+    description: current.description ?? incoming.description,
+    imageUrl:
+      !current.imageUrl || current.imageUrl === fallbackImage
+        ? incoming.imageUrl ?? current.imageUrl
+        : current.imageUrl,
+    owner: current.owner === "YouTube Music" ? incoming.owner : current.owner,
+    title: current.title === "YouTube Playlist" ? incoming.title : current.title,
+  };
+}
+
+function getObject(source: unknown, path: string) {
+  const segments = path.split(".");
+  let current: unknown = source;
+
+  for (const segment of segments) {
+    if (Array.isArray(current) && /^\d+$/.test(segment)) {
+      current = current[Number(segment)];
+      continue;
+    }
+
+    if (!isRecord(current)) {
+      return undefined;
+    }
+
+    current = current[segment];
+  }
+
+  return current;
+}
+
+function getArray(source: unknown) {
+  return Array.isArray(source) ? source : [];
+}
+
+function getString(source: unknown) {
+  return typeof source === "string" ? source : null;
+}
+
+function getText(source: unknown): string | null {
+  if (typeof source === "string") {
+    return source;
+  }
+
+  if (!source) {
+    return null;
+  }
+
+  const simpleText = getString((source as Record<string, unknown>).simpleText);
+
+  if (simpleText) {
+    return simpleText;
+  }
+
+  const content = getString(
+    getObject(source, "content")
+  );
+
+  if (content) {
+    return content;
+  }
+
+  const runs = getArray((source as Record<string, unknown>).runs);
+
+  if (!runs.length) {
+    return null;
+  }
+
+  const text = runs
+    .map((run) => getString((run as Record<string, unknown>).text) ?? "")
+    .join("")
+    .trim();
+
+  return text || null;
+}
+
+function pickThumbnailUrl(thumbnailSource: unknown) {
+  const thumbnails = getArray(
+    isRecord(thumbnailSource)
+      ? (thumbnailSource as Record<string, unknown>).thumbnails
+      : undefined
+  );
+
+  for (let index = thumbnails.length - 1; index >= 0; index -= 1) {
+    const url = getString((thumbnails[index] as Record<string, unknown>).url);
+
+    if (url) {
+      return url;
+    }
+  }
+
+  const sources = getArray(
+    isRecord(thumbnailSource)
+      ? (thumbnailSource as Record<string, unknown>).sources
+      : undefined
+  );
+
+  for (let index = sources.length - 1; index >= 0; index -= 1) {
+    const url = getString((sources[index] as Record<string, unknown>).url);
+
+    if (url) {
+      return url;
+    }
+  }
+
+  return null;
+}
+
+function getMusicColumnText(columnsSource: unknown, index: number) {
+  const columns = getArray(columnsSource);
+  const column = columns[index];
+
+  if (!isRecord(column)) {
+    return undefined;
+  }
+
+  const flexText = getObject(column, "musicResponsiveListItemFlexColumnRenderer.text");
+
+  if (flexText) {
+    return flexText;
+  }
+
+  return getObject(column, "musicResponsiveListItemFixedColumnRenderer.text");
+}
+
+function extractMusicArtists(renderer: Record<string, unknown>) {
+  const artistColumn = getArray(renderer.flexColumns)[1];
+
+  if (!isRecord(artistColumn)) {
+    return [];
+  }
+
+  const runs = getArray(
+    getObject(artistColumn, "musicResponsiveListItemFlexColumnRenderer.text.runs")
+  );
+  const artists = runs
+    .map((run) => {
+      if (!isRecord(run)) {
+        return null;
+      }
+
+      const pageType = getString(
+        getObject(
+          run,
+          "navigationEndpoint.browseEndpoint.browseEndpointContextSupportedConfigs.browseEndpointContextMusicConfig.pageType"
+        )
+      );
+
+      if (pageType !== "MUSIC_PAGE_TYPE_ARTIST") {
+        return null;
+      }
+
+      return sanitizeYouTubeText(getString(run.text));
+    })
+    .filter((value): value is string => Boolean(value));
+
+  if (artists.length) {
+    return artists;
+  }
+
+  const fallbackArtists = sanitizeYouTubeText(
+    getText(getObject(artistColumn, "musicResponsiveListItemFlexColumnRenderer.text"))
+  );
+
+  return fallbackArtists ? [fallbackArtists] : [];
+}
+
+function parseDurationToMs(value: string | null) {
+  if (!value) {
     return 0;
   }
 
-  const [, days = "0", hours = "0", minutes = "0", seconds = "0"] = match;
-  const totalSeconds =
-    Number(days) * 86_400 +
-    Number(hours) * 3_600 +
-    Number(minutes) * 60 +
-    Number(seconds);
+  const parts = value
+    .split(":")
+    .map((part) => Number.parseInt(part, 10))
+    .filter((part) => Number.isFinite(part));
 
-  return totalSeconds * 1000;
+  if (!parts.length) {
+    return 0;
+  }
+
+  const seconds = parts.reduce((total, part) => total * 60 + part, 0);
+  return seconds * 1000;
 }
 
-function pickThumbnailUrl(thumbnails: YouTubeThumbnailSet | null) {
-  return (
-    thumbnails?.maxres?.url ??
-    thumbnails?.standard?.url ??
-    thumbnails?.high?.url ??
-    thumbnails?.medium?.url ??
-    thumbnails?.default?.url ??
-    null
+function decodeJavaScriptStringLiteral(source: string) {
+  return source.replace(
+    /\\(u[0-9a-fA-F]{4}|x[0-9a-fA-F]{2}|["'\\/bfnrt])/g,
+    (_match, token: string) => {
+      if (token.startsWith("u")) {
+        return String.fromCharCode(Number.parseInt(token.slice(1), 16));
+      }
+
+      if (token.startsWith("x")) {
+        return String.fromCharCode(Number.parseInt(token.slice(1), 16));
+      }
+
+      switch (token) {
+        case "b":
+          return "\b";
+        case "f":
+          return "\f";
+        case "n":
+          return "\n";
+        case "r":
+          return "\r";
+        case "t":
+          return "\t";
+        case "/":
+          return "/";
+        case "\\":
+          return "\\";
+        case '"':
+          return '"';
+        case "'":
+          return "'";
+        default:
+          return token;
+      }
+    }
   );
 }
 
@@ -341,10 +944,6 @@ function validateYouTubePlaylistId(candidate: string) {
   return normalizedCandidate;
 }
 
-async function safeJson(response: Response) {
-  try {
-    return await response.json();
-  } catch {
-    return undefined;
-  }
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

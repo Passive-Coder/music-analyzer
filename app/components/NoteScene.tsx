@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import * as THREE from "three";
 
 const DESCRIPTION =
@@ -11,6 +11,8 @@ const BASE_NOTE_TILT = -Math.PI / 12;
 const LOGO_MODE_SCALE = 0.28;
 const LOGO_TRANSITION_DURATION = 1.25;
 const FULL_ROTATION = Math.PI * 2;
+const PUBLISH_RAINBOW_DURATION = 0.5;
+const PUBLISH_EFFECT_DURATION = 0.96;
 const HOME_NOTE_COLOR = new THREE.Color(0xc8dbff);
 const LOGO_NOTE_COLOR = new THREE.Color(0x153974);
 const HOME_NOTE_EMISSIVE = new THREE.Color(0x0d214b);
@@ -24,32 +26,79 @@ const LOGO_RIM_LIGHT_COLOR = new THREE.Color(0xb0d8ff);
 const HOME_FRONT_LIGHT_COLOR = new THREE.Color(0x7ba7ff);
 const LOGO_FRONT_LIGHT_COLOR = new THREE.Color(0xd7ebff);
 const LOGO_CLICK_TARGET_SIZE = new THREE.Vector3(8.8, 9.6, 4.4);
+type NoteDock = "center" | "top-right" | "top-left";
 
 type NoteSceneProps = {
-  isLogoMode?: boolean;
+  dock?: NoteDock;
   isPromoted?: boolean;
+  publishEffectToken?: number;
+  volumeFill?: number;
   onNoteClick?: () => void;
-  onTransitionComplete?: (mode: "home" | "logo") => void;
+  onTransitionComplete?: (dock: NoteDock) => void;
 };
 
+type VolumeWaveDirection = "inbound" | "outbound";
+
 export function NoteScene({
-  isLogoMode = false,
+  dock = "center",
   isPromoted = false,
+  publishEffectToken = 0,
+  volumeFill = 0,
   onNoteClick,
   onTransitionComplete,
 }: NoteSceneProps) {
   const containerRef = useRef<HTMLDivElement>(null);
-  const isLogoModeRef = useRef(isLogoMode);
+  const waveLayerRef = useRef<HTMLDivElement>(null);
+  const dockRef = useRef<NoteDock>(dock);
+  const previousDockRef = useRef<NoteDock>(dock);
+  const publishEffectTokenRef = useRef(publishEffectToken);
+  const volumeFillRef = useRef(volumeFill);
+  const previousVolumeFillRef = useRef(volumeFill);
   const onNoteClickRef = useRef(onNoteClick);
   const onTransitionCompleteRef = useRef(onTransitionComplete);
+  const [volumeWave, setVolumeWave] = useState<{
+    direction: VolumeWaveDirection;
+    token: number;
+  } | null>(null);
 
   useEffect(() => {
-    isLogoModeRef.current = isLogoMode;
-  }, [isLogoMode]);
+    dockRef.current = dock;
+  }, [dock]);
 
   useEffect(() => {
     onNoteClickRef.current = onNoteClick;
   }, [onNoteClick]);
+
+  useEffect(() => {
+    publishEffectTokenRef.current = publishEffectToken;
+  }, [publishEffectToken]);
+
+  useEffect(() => {
+    volumeFillRef.current = volumeFill;
+  }, [volumeFill]);
+
+  useEffect(() => {
+    const previousDock = previousDockRef.current;
+    const previousVolumeFill = previousVolumeFillRef.current;
+
+    previousDockRef.current = dock;
+    previousVolumeFillRef.current = volumeFill;
+
+    if (dock !== "top-left" || previousDock !== "top-left") {
+      return;
+    }
+
+    const fillDelta = volumeFill - previousVolumeFill;
+
+    if (Math.abs(fillDelta) < 0.0001) {
+      return;
+    }
+
+    setVolumeWave((currentWave) => ({
+      direction: fillDelta > 0 ? "outbound" : "inbound",
+      token: (currentWave?.token ?? 0) + 1,
+    }));
+  }, [dock, volumeFill]);
 
   useEffect(() => {
     onTransitionCompleteRef.current = onTransitionComplete;
@@ -140,10 +189,12 @@ export function NoteScene({
       scene.add(noteRig);
 
       const restPosition = new THREE.Vector3();
-      const logoTargetPosition = new THREE.Vector3();
+      const topRightTargetPosition = new THREE.Vector3();
+      const topLeftTargetPosition = new THREE.Vector3();
       const raycaster = new THREE.Raycaster();
       const raycastPointer = new THREE.Vector2();
       const noteMeshes: THREE.Object3D[] = [noteClickTarget];
+      const noteWorldPosition = new THREE.Vector3();
 
       note.traverse((child) => {
         if (child instanceof THREE.Mesh) {
@@ -151,25 +202,36 @@ export function NoteScene({
         }
       });
 
-      let transitionProgress = isLogoModeRef.current ? 1 : 0;
+      let transitionProgress = dockRef.current === "center" ? 0 : 1;
       let transitionStartProgress = transitionProgress;
       let transitionEndProgress = transitionProgress;
       let transitionElapsed = 0;
       let isTransitioning = false;
-      let activeTarget = transitionEndProgress;
-      let pendingCompletionTarget: number | null = null;
+      let activeTargetDock: NoteDock = dockRef.current;
+      let activeTransitionDock: Exclude<NoteDock, "center"> =
+        dockRef.current === "top-left" ? "top-left" : "top-right";
+      let pendingCompletionTarget: NoteDock | null = null;
+      let lastPublishEffectToken = publishEffectTokenRef.current;
+      let publishEffectElapsed = Number.POSITIVE_INFINITY;
+      const rainbowColor = new THREE.Color();
+      const rainbowGlowColor = new THREE.Color();
 
-      const beginTransition = (target: number) => {
-        activeTarget = target;
+      const beginTransition = (targetDock: NoteDock) => {
+        activeTargetDock = targetDock;
+        if (targetDock !== "center") {
+          activeTransitionDock = targetDock;
+        }
         transitionStartProgress = transitionProgress;
-        transitionEndProgress = target;
+        transitionEndProgress = targetDock === "center" ? 0 : 1;
         transitionElapsed = 0;
         isTransitioning = true;
-        pendingCompletionTarget = target;
+        pendingCompletionTarget = targetDock;
       };
 
       const isNoteClickable = () =>
-        activeTarget === 1 && !isTransitioning && transitionProgress >= 0.999;
+        activeTargetDock !== "center" &&
+        !isTransitioning &&
+        transitionProgress >= 0.999;
 
       const syncRaycastPointer = (event: PointerEvent) => {
         const rect = container.getBoundingClientRect();
@@ -215,11 +277,21 @@ export function NoteScene({
         camera.updateProjectionMatrix();
         camera.updateMatrixWorld();
         renderer.setSize(width, height, false);
-        logoTargetPosition.copy(
+        topRightTargetPosition.copy(
           screenToWorldOnPlane(
             camera,
-            width - Math.min(width * 0.08, 96),
-            Math.max(height * 0.11, 72),
+            width - Math.min(width * 0.055, 70),
+            Math.max(height * 0.095, 64),
+            width,
+            height,
+            0
+          )
+        );
+        topLeftTargetPosition.copy(
+          screenToWorldOnPlane(
+            camera,
+            Math.min(width * 0.055, 70),
+            Math.max(height * 0.095, 64),
             width,
             height,
             0
@@ -236,10 +308,15 @@ export function NoteScene({
 
       renderer.setAnimationLoop(() => {
         const delta = Math.min(clock.getDelta(), 0.033);
-        const logoTarget = isLogoModeRef.current ? 1 : 0;
+        const targetDock = dockRef.current;
 
-        if (logoTarget !== activeTarget) {
-          beginTransition(logoTarget);
+        if (publishEffectTokenRef.current !== lastPublishEffectToken) {
+          lastPublishEffectToken = publishEffectTokenRef.current;
+          publishEffectElapsed = 0;
+        }
+
+        if (targetDock !== activeTargetDock) {
+          beginTransition(targetDock);
         }
 
         if (isTransitioning) {
@@ -265,14 +342,12 @@ export function NoteScene({
             isTransitioning = false;
 
             if (pendingCompletionTarget !== null) {
-              onTransitionCompleteRef.current?.(
-                pendingCompletionTarget === 1 ? "logo" : "home"
-              );
+              onTransitionCompleteRef.current?.(pendingCompletionTarget);
               pendingCompletionTarget = null;
             }
           }
         } else {
-          transitionProgress = activeTarget;
+          transitionProgress = activeTargetDock === "center" ? 0 : 1;
         }
 
         const easedLogoProgress = transitionProgress;
@@ -352,14 +427,68 @@ export function NoteScene({
           easedLogoProgress
         );
 
-        noteRig.position.lerpVectors(
-          restPosition,
-          logoTargetPosition,
-          easedLogoProgress
-        );
+        const targetPosition =
+          activeTransitionDock === "top-left"
+            ? topLeftTargetPosition
+            : topRightTargetPosition;
+        noteRig.position.lerpVectors(restPosition, targetPosition, easedLogoProgress);
         noteRig.scale.setScalar(
           THREE.MathUtils.lerp(1, LOGO_MODE_SCALE, easedLogoProgress)
         );
+
+        noteRig.updateWorldMatrix(true, true);
+        noteRig.getWorldPosition(noteWorldPosition);
+        noteWorldPosition.project(camera);
+        waveLayerRef.current?.style.setProperty(
+          "--note-wave-x",
+          `${(noteWorldPosition.x * 0.5 + 0.5) * container.clientWidth}px`
+        );
+        waveLayerRef.current?.style.setProperty(
+          "--note-wave-y",
+          `${(-noteWorldPosition.y * 0.5 + 0.5) * container.clientHeight}px`
+        );
+
+        if (Number.isFinite(publishEffectElapsed)) {
+          publishEffectElapsed += delta;
+
+          const rainbowBlend = THREE.MathUtils.clamp(
+            1 -
+              Math.max(publishEffectElapsed - PUBLISH_RAINBOW_DURATION, 0) /
+                Math.max(PUBLISH_EFFECT_DURATION - PUBLISH_RAINBOW_DURATION, 0.001),
+            0,
+            1
+          );
+
+          if (rainbowBlend > 0) {
+            rainbowColor.setHSL(
+              (0.04 + publishEffectElapsed * 1.9) % 1,
+              0.9,
+              0.56
+            );
+            rainbowGlowColor.copy(rainbowColor).offsetHSL(0.08, -0.06, 0.18);
+
+            noteMaterial.color.lerp(rainbowColor, 0.92 * rainbowBlend);
+            noteMaterial.emissive.lerp(rainbowGlowColor, 0.78 * rainbowBlend);
+            keyLight.color.lerp(rainbowGlowColor, 0.74 * rainbowBlend);
+            fillLight.color.lerp(rainbowColor, 0.68 * rainbowBlend);
+            rimLight.color.lerp(rainbowGlowColor, 0.88 * rainbowBlend);
+            frontLight.color.lerp(rainbowColor, 0.6 * rainbowBlend);
+            noteMaterial.emissiveIntensity = THREE.MathUtils.lerp(
+              noteMaterial.emissiveIntensity,
+              0.6,
+              rainbowBlend
+            );
+            noteMaterial.envMapIntensity = THREE.MathUtils.lerp(
+              noteMaterial.envMapIntensity,
+              2.3,
+              rainbowBlend
+            );
+          }
+
+          if (publishEffectElapsed >= PUBLISH_EFFECT_DURATION) {
+            publishEffectElapsed = Number.POSITIVE_INFINITY;
+          }
+        }
 
         updateGlowBodies(glowBodies, delta * LIGHT_MOTION_MULTIPLIER);
         keyLight.target.position.x =
@@ -434,6 +563,14 @@ export function NoteScene({
       className={`scene-shell${isPromoted ? " scene-shell-logo" : ""}`}
     >
       <h1 className="sr-only">3D Metallic Musical Note</h1>
+      <div ref={waveLayerRef} className="note-scene__volume-wave-layer" aria-hidden="true">
+        {volumeWave ? (
+          <div
+            key={`${volumeWave.direction}-${volumeWave.token}`}
+            className={`note-scene__volume-wave note-scene__volume-wave--${volumeWave.direction}`}
+          />
+        ) : null}
+      </div>
       <div ref={containerRef} className="scene-viewport" />
     </section>
   );
@@ -445,10 +582,10 @@ function createNoteMaterial() {
     emissive: HOME_NOTE_EMISSIVE.clone(),
     emissiveIntensity: 0.08,
     metalness: 1,
-    roughness: 0.12,
-    envMapIntensity: 2.6,
-    clearcoat: 0.38,
-    clearcoatRoughness: 0.06,
+    roughness: 0.08,
+    envMapIntensity: 2.9,
+    clearcoat: 0.44,
+    clearcoatRoughness: 0.04,
   });
 }
 
