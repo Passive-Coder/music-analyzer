@@ -722,10 +722,15 @@ export function PlaylistWorkspace({
 
     setSongs((currentSongs) => {
       const nextIndex = index + direction;
-      if (nextIndex < 0 || nextIndex >= currentSongs.length) return currentSongs;
+
+      if (nextIndex < 0 || nextIndex >= currentSongs.length) {
+        return currentSongs;
+      }
+
       const nextSongs = [...currentSongs];
       const [song] = nextSongs.splice(index, 1);
       nextSongs.splice(nextIndex, 0, song);
+
       return nextSongs;
     });
   };
@@ -737,10 +742,15 @@ export function PlaylistWorkspace({
 
     setSongs((currentSongs) => {
       const nextSongs = [...currentSongs];
-      for (let i = nextSongs.length - 1; i > 0; i--) {
-        const j = Math.floor(Math.random() * (i + 1));
-        [nextSongs[i], nextSongs[j]] = [nextSongs[j], nextSongs[i]];
+
+      for (let index = nextSongs.length - 1; index > 0; index -= 1) {
+        const swapIndex = Math.floor(Math.random() * (index + 1));
+        [nextSongs[index], nextSongs[swapIndex]] = [
+          nextSongs[swapIndex],
+          nextSongs[index],
+        ];
       }
+
       return nextSongs;
     });
   };
