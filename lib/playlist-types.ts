@@ -48,6 +48,8 @@ export type ActivePlaylistState = {
 export type PublishedPlaylistRecord = {
   code: string;
   createdAt: string;
+  currentSong: PlaylistSong | null;
+  currentSongStartedAt: string | null;
   publisherEmail: string | null;
   currentBatch: PlaylistSong[];
   currentBatchIndex: number;

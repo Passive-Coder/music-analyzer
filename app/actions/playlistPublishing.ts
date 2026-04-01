@@ -22,12 +22,17 @@ const voteForCurrentBatchSongRef =
   makeFunctionReference<"mutation">("playlists:voteForCurrentBatchSong");
 const advanceCurrentBatchRef =
   makeFunctionReference<"mutation">("playlists:advanceCurrentBatch");
+const abortPublishedPlaylistRef =
+  makeFunctionReference<"mutation">("playlists:abortPublishedPlaylist");
 const getPublishedPlaylistRef =
   makeFunctionReference<"query">("playlists:getPublishedPlaylist");
+const getOwnedPublishedPlaylistRef =
+  makeFunctionReference<"query">("playlists:getOwnedPublishedPlaylist");
 
 export async function publishPlaylistAction(input: {
   batchSongs: PlaylistSong[];
   currentBatchIndex: number;
+  initialSongId: string | null;
   librarySongs: PlaylistSong[];
   loadedPlaylists: PlaylistData[];
 }) {
@@ -103,6 +108,20 @@ export async function advanceCurrentBatchAction(input: {
   });
 }
 
+export async function abortPublishedPlaylistAction(input: {
+  code: string;
+  creatorToken: string;
+}) {
+  return runPlaylistMutation(async () => {
+    await requireGoogleSession();
+    await fetchMutation(abortPublishedPlaylistRef, input, {
+      url: getConvexDeploymentUrl(),
+    });
+
+    return null;
+  });
+}
+
 export async function getPublishedPlaylistAction(code: string) {
   try {
     const result = await fetchQuery(
@@ -111,7 +130,10 @@ export async function getPublishedPlaylistAction(code: string) {
       { url: getConvexDeploymentUrl() }
     );
 
-    return { ok: true as const, result: result as PublishedPlaylistRecord };
+    return {
+      ok: true as const,
+      result: result as PublishedPlaylistRecord | null,
+    };
   } catch (error) {
     return {
       error:
@@ -123,8 +145,37 @@ export async function getPublishedPlaylistAction(code: string) {
   }
 }
 
-async function runPlaylistMutation(
-  operation: () => Promise<PublishedPlaylistRecord>
+export async function getOwnedPublishedPlaylistAction() {
+  try {
+    const session = await requireGoogleSession();
+    const result = await fetchQuery(
+      getOwnedPublishedPlaylistRef,
+      { publisherEmail: session.email },
+      { url: getConvexDeploymentUrl() }
+    );
+
+    return {
+      ok: true as const,
+      result: result as
+        | {
+            creatorToken: string;
+            record: PublishedPlaylistRecord;
+          }
+        | null,
+    };
+  } catch (error) {
+    return {
+      error:
+        error instanceof Error
+          ? error.message
+          : "Loading the creator session failed.",
+      ok: false as const,
+    };
+  }
+}
+
+async function runPlaylistMutation<T>(
+  operation: () => Promise<T>
 ) {
   try {
     const result = await operation();

@@ -2,6 +2,7 @@
 
 import {
   useEffect,
+  useMemo,
   useRef,
   useState,
   type CSSProperties,
@@ -12,15 +13,19 @@ import {
   getGoogleSessionAction,
   signOutOfGoogleAction,
 } from "@/app/actions/googleAuth";
+import { syncActivePlaylistPlaybackAction } from "@/app/actions/activePlaylist";
 import {
+  abortPublishedPlaylistAction,
   advanceCurrentBatchAction,
   appendLoadedPlaylistAction,
+  getOwnedPublishedPlaylistAction,
   publishPlaylistAction,
   updateUpcomingBatchSongAction,
   voteForCurrentBatchSongAction,
 } from "@/app/actions/playlistPublishing";
 import { GoogleSignInPanel } from "@/app/components/GoogleSignInPanel";
 import { VoteSongWorkspace } from "@/app/components/VoteSongWorkspace";
+import { getConvexBrowserClient } from "@/lib/convex-browser-client";
 import type { GoogleSession } from "@/lib/google-session";
 import type {
   PlaylistData,
@@ -28,6 +33,7 @@ import type {
   PublishedPlaylistRecord,
   SongwiseVote,
 } from "@/lib/playlist-types";
+import { api } from "@/convex/_generated/api";
 
 type PlaylistWorkspaceProps = {
   isVisible?: boolean;
@@ -157,11 +163,19 @@ export function PlaylistWorkspace({
   );
   const [publishedCode, setPublishedCode] = useState<string | null>(null);
   const [creatorToken, setCreatorToken] = useState<string | null>(null);
+  const [openingSongId, setOpeningSongId] = useState<string | null>(null);
+  const [publishedCurrentSong, setPublishedCurrentSong] = useState<PlaylistSong | null>(
+    null
+  );
+  const [publishedCurrentSongStartedAt, setPublishedCurrentSongStartedAt] = useState<
+    string | null
+  >(null);
   const [requestState, setRequestState] = useState<RequestState>("idle");
   const [mutationState, setMutationState] = useState<MutationState>("idle");
   const [error, setError] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
   const [editingTarget, setEditingTarget] = useState<EditingTarget>(null);
+  const [isSelectingOpeningSong, setIsSelectingOpeningSong] = useState(false);
   const [activeBatchIndex, setActiveBatchIndex] = useState(0);
   const [loadedPlaylistCursor, setLoadedPlaylistCursor] = useState(0);
   const [activeLoadedPlaylistId, setActiveLoadedPlaylistId] = useState<
@@ -169,6 +183,7 @@ export function PlaylistWorkspace({
   >(null);
   const [playbackSong, setPlaybackSong] = useState<PlaylistSong | null>(null);
   const [playbackToken, setPlaybackToken] = useState(0);
+  const convexClient = useMemo(() => getConvexBrowserClient(), []);
 
   const isVoteMode = mode === "vote";
   const isAuthenticated = authState === "authenticated";
@@ -194,6 +209,7 @@ export function PlaylistWorkspace({
     ? Math.min(currentBatchIndex, Math.max(songBatches.length - 1, 0))
     : activeBatchIndex;
   const activeBatch = songBatches[displayedBatchIndex] ?? null;
+  const openingSong = songs.find((song) => song.id === openingSongId) ?? songs[0] ?? null;
   const activeBatchStatus = getBatchStatus(
     displayedBatchIndex,
     currentBatchIndex,
@@ -201,6 +217,11 @@ export function PlaylistWorkspace({
   );
   const editingTargetSong =
     editingTarget !== null ? batchSongs[editingTarget.globalIndex] ?? null : null;
+  const selectionMode = isSelectingOpeningSong
+    ? "opening"
+    : editingTarget !== null
+      ? "batch"
+      : null;
   const playbackEmbedUrl = getSongEmbedUrl(playbackSong, playbackToken);
   const busy = requestState !== "idle" || mutationState !== "idle";
   useEffect(() => {
@@ -240,6 +261,46 @@ export function PlaylistWorkspace({
       isCancelled = true;
     };
   }, [hasMounted, isVisible]);
+
+  useEffect(() => {
+    if (
+      !hasMounted ||
+      !isVisible ||
+      isVoteMode ||
+      authState !== "authenticated" ||
+      !authSession
+    ) {
+      return;
+    }
+
+    let isCancelled = false;
+
+    const loadOwnedSession = async () => {
+      const result = await getOwnedPublishedPlaylistAction();
+
+      if (isCancelled || !result.ok) {
+        return;
+      }
+
+      if (!result.result) {
+        setCreatorToken(null);
+        clearPublishedSession();
+        return;
+      }
+
+      applyPublishedRecord(
+        result.result.record,
+        result.result.record.code,
+        result.result.creatorToken
+      );
+    };
+
+    void loadOwnedSession();
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [authSession, authState, hasMounted, isVisible, isVoteMode]);
 
   useEffect(() => {
     if (!loadedPlaylists.length) {
@@ -308,6 +369,28 @@ export function PlaylistWorkspace({
   ]);
 
   useEffect(() => {
+    if (isPublished) {
+      return;
+    }
+
+    if (!songs.length) {
+      if (openingSongId !== null) {
+        setOpeningSongId(null);
+      }
+      return;
+    }
+
+    const nextOpeningSongId =
+      songs.find((song) => song.id === openingSongId)?.id ??
+      songs[0]?.id ??
+      null;
+
+    if (nextOpeningSongId !== openingSongId) {
+      setOpeningSongId(nextOpeningSongId);
+    }
+  }, [isPublished, openingSongId, songs]);
+
+  useEffect(() => {
     if (!hasMounted || isPublished) {
       return;
     }
@@ -320,9 +403,15 @@ export function PlaylistWorkspace({
     setSongwiseVote(createVoteSnapshot(localCurrentBatch));
   }, [batchSongs, currentBatchIndex, hasMounted, isPublished]);
 
-  if (!hasMounted) {
-    return null;
-  }
+  const clearPublishedSession = () => {
+    setPublishedCode(null);
+    setCreatorToken(null);
+    setPublishedCurrentSong(null);
+    setPublishedCurrentSongStartedAt(null);
+    setSongwiseVote([]);
+    setSongsPlayedBefore([]);
+    setError(null);
+  };
 
   const applyPublishedRecord = (
       record: PublishedPlaylistRecord,
@@ -351,6 +440,11 @@ export function PlaylistWorkspace({
     setCurrentBatchIndex(record.currentBatchIndex);
     setSongwiseVote(record.songwiseVote);
     setSongsPlayedBefore(record.songsPlayedBefore);
+    setPublishedCurrentSong(record.currentSong);
+    setPublishedCurrentSongStartedAt(record.currentSongStartedAt);
+    setOpeningSongId(record.currentSong?.id ?? null);
+    setIsSelectingOpeningSong(false);
+    setEditingTarget(null);
     setActiveBatchIndex(
       Number.isFinite(resolvedActiveBatchIndex)
         ? resolvedActiveBatchIndex
@@ -376,6 +470,77 @@ export function PlaylistWorkspace({
     }
   };
 
+  useEffect(() => {
+    if (!publishedCode) {
+      return;
+    }
+
+    const watch = convexClient.watchQuery(api.playlists.getPublishedPlaylist, {
+      code: publishedCode,
+    });
+
+    const applySnapshot = () => {
+      try {
+        const snapshot = watch.localQueryResult();
+
+        if (typeof snapshot === "undefined") {
+          return;
+        }
+
+        if (snapshot === null) {
+          clearPublishedSession();
+          return;
+        }
+
+        applyPublishedRecord(snapshot, snapshot.code, undefined, activeBatchIndex);
+      } catch (watchError) {
+        setError(
+          watchError instanceof Error
+            ? watchError.message
+            : "The published session could not be refreshed."
+        );
+      }
+    };
+
+    applySnapshot();
+    const unsubscribe = watch.onUpdate(applySnapshot);
+
+    return () => {
+      unsubscribe();
+    };
+  }, [activeBatchIndex, convexClient, publishedCode]);
+
+  useEffect(() => {
+    if (
+      !publishedCode ||
+      !publishedCurrentSong ||
+      !publishedCurrentSongStartedAt ||
+      !isCreator ||
+      !isVisible
+    ) {
+      return;
+    }
+
+    const startedAtMs = Date.parse(publishedCurrentSongStartedAt);
+    const currentSongEndAt =
+      (Number.isFinite(startedAtMs) ? startedAtMs : Date.now()) +
+      publishedCurrentSong.durationMs;
+    const delay = Math.max(currentSongEndAt - Date.now() + 350, 350);
+    const timeoutId = window.setTimeout(() => {
+      void syncActivePlaylistPlaybackAction(publishedCode);
+    }, delay);
+
+    return () => {
+      window.clearTimeout(timeoutId);
+    };
+  }, [
+    isCreator,
+    isVisible,
+    publishedCode,
+    publishedCurrentSong,
+    publishedCurrentSongStartedAt,
+  ]);
+
   const handleLoadPlaylist = async () => {
     setRequestState("loading");
     setError(null);
@@ -398,12 +563,24 @@ export function PlaylistWorkspace({
         throw new Error(payload.error ?? "Playlist loading failed.");
       }
 
+      const examplePlaylistIndex = loadedPlaylists.findIndex(
+        (playlist) => playlist.id === EXAMPLE_PLAYLIST_ID
+      );
+      const shouldReplaceExamplePlaylist =
+        !publishedCode && !creatorToken && examplePlaylistIndex >= 0;
       const normalizedPlaylist = normalizePlaylistForWorkspace(
         payload.playlist,
-        loadedPlaylists.length
+        shouldReplaceExamplePlaylist ? examplePlaylistIndex : loadedPlaylists.length
       );
 
-      if (loadedPlaylists.some((playlist) => playlist.id === normalizedPlaylist.id)) {
+      if (
+        loadedPlaylists.some(
+          (playlist, playlistIndex) =>
+            playlist.id === normalizedPlaylist.id &&
+            (!shouldReplaceExamplePlaylist ||
+              playlistIndex !== examplePlaylistIndex)
+        )
+      ) {
         throw new Error("That playlist is already in the loaded list.");
       }
 
@@ -420,15 +597,44 @@ export function PlaylistWorkspace({
 
         applyPublishedRecord(result.result, undefined, undefined, activeBatchIndex);
       } else {
-        setLoadedPlaylists((currentPlaylists) => [
-          ...currentPlaylists,
-          normalizedPlaylist,
-        ]);
-        setSongs((currentSongs) => [...currentSongs, ...normalizedPlaylist.songs]);
+        if (shouldReplaceExamplePlaylist) {
+          setLoadedPlaylists((currentPlaylists) =>
+            currentPlaylists.map((playlist, playlistIndex) =>
+              playlistIndex === examplePlaylistIndex ? normalizedPlaylist : playlist
+            )
+          );
+          setSongs((currentSongs) =>
+            replacePlaylistSongs(
+              currentSongs,
+              EXAMPLE_PLAYLIST_ID,
+              normalizedPlaylist.songs
+            )
+          );
+          setBatchSongs((currentSongs) =>
+            replacePlaylistSongs(
+              currentSongs,
+              EXAMPLE_PLAYLIST_ID,
+              normalizedPlaylist.songs
+            )
+          );
+          setCurrentBatchIndex(0);
+          setActiveBatchIndex(0);
+          setSongsPlayedBefore([]);
+          setIsSelectingOpeningSong(false);
+          setEditingTarget(null);
+        } else {
+          setLoadedPlaylists((currentPlaylists) => [
+            ...currentPlaylists,
+            normalizedPlaylist,
+          ]);
+          setSongs((currentSongs) => [...currentSongs, ...normalizedPlaylist.songs]);
+        }
       }
 
       setActiveLoadedPlaylistId(normalizedPlaylist.id);
-      setLoadedPlaylistCursor(loadedPlaylists.length);
+      setLoadedPlaylistCursor(
+        shouldReplaceExamplePlaylist ? examplePlaylistIndex : loadedPlaylists.length
+      );
       setPlaylistUrl("");
       setPlaybackSong(null);
       setError(null);
@@ -478,12 +684,18 @@ export function PlaylistWorkspace({
       return;
     }
 
+    if (!openingSong) {
+      setError("Choose the first song to start the room before publishing.");
+      return;
+    }
+
     setMutationState("publishing");
     setError(null);
 
     const result = await publishPlaylistAction({
       batchSongs,
-      currentBatchIndex,
+      currentBatchIndex: 0,
+      initialSongId: openingSong.id,
       librarySongs: songs,
       loadedPlaylists,
     });
@@ -539,10 +751,38 @@ export function PlaylistWorkspace({
     }
 
     setEditingTarget(null);
+    setIsSelectingOpeningSong(false);
     setCurrentBatchIndex(0);
     setActiveBatchIndex(0);
     setSongsPlayedBefore([]);
     setBatchSongs([...songs]);
+  };
+
+  const handleRemoveLoadedPlaylist = (playlistId: string) => {
+    if (isPublished) {
+      return;
+    }
+
+    setLoadedPlaylists((currentPlaylists) =>
+      currentPlaylists.filter((playlist) => playlist.id !== playlistId)
+    );
+    setSongs((currentSongs) =>
+      currentSongs.filter((song) => song.originPlaylistId !== playlistId)
+    );
+    setBatchSongs((currentSongs) =>
+      currentSongs.filter((song) => song.originPlaylistId !== playlistId)
+    );
+    setSongsPlayedBefore((currentSongs) =>
+      currentSongs.filter((song) => song.originPlaylistId !== playlistId)
+    );
+    setPlaybackSong((currentSong) =>
+      currentSong?.originPlaylistId === playlistId ? null : currentSong
+    );
+    setEditingTarget(null);
+    setIsSelectingOpeningSong(false);
+    setCurrentBatchIndex(0);
+    setActiveBatchIndex(0);
+    setError(null);
   };
 
   const selectReplacementSong = async (sourceIndex: number) => {
@@ -676,12 +916,61 @@ export function PlaylistWorkspace({
     );
   };
 
+  const handleAbortSession = async () => {
+    if (!publishedCode || !creatorToken) {
+      return;
+    }
+
+    setMutationState("syncing");
+    setError(null);
+
+    const result = await abortPublishedPlaylistAction({
+      code: publishedCode,
+      creatorToken,
+    });
+
+    setMutationState("idle");
+
+    if (!result.ok) {
+      setError(result.error);
+      return;
+    }
+
+    clearPublishedSession();
+  };
+
   const handleBatchSongClick = (song: PlaylistSong) => {
     playSong(song);
   };
 
-  const handleLibrarySongClick = (song: PlaylistSong) => {
+  const handleLibrarySongClick = (song: PlaylistSong, index: number) => {
+    if (!isVoteMode && isSelectingOpeningSong) {
+      setOpeningSongId(song.id);
+      setIsSelectingOpeningSong(false);
+      return;
+    }
+
+    if (!isVoteMode && editingTarget !== null) {
+      void selectReplacementSong(index);
+      return;
+    }
+
     playSong(song);
+  };
+
+  const handleStartOpeningSelection = () => {
+    setEditingTarget(null);
+    setIsSelectingOpeningSong(true);
+  };
+
+  const handleStartBatchSelection = (target: EditingTarget) => {
+    setIsSelectingOpeningSong(false);
+    setEditingTarget(target);
+  };
+
+  const handleCancelSelection = () => {
+    setIsSelectingOpeningSong(false);
+    setEditingTarget(null);
   };
 
   const handleSignedIn = (session: GoogleSession) => {
@@ -701,6 +990,10 @@ export function PlaylistWorkspace({
     setAuthSession(null);
     setAuthState("unauthenticated");
   };
+
+  if (!hasMounted) {
+    return null;
+  }
 
   return (
     <section
@@ -760,9 +1053,14 @@ export function PlaylistWorkspace({
           {!isVoteMode ? (
             <div className="playlist-workspace__loader">
               <label className="playlist-workspace__field">
-                <span className="playlist-workspace__label">
-                  YouTube Playlist Link
-                </span>
+                <div style={{display: 'flex', flexDirection: 'row', justifyContent: 'space-around', alignItems: 'center'}}>
+                    <span className="playlist-workspace__label">
+                    YouTube Playlist Link
+                  </span>
+                  <span className="playlist-workspace__pill">
+                    Signed in as {authSession?.email}
+                  </span>
+                </div>
                 <input
                   className="playlist-workspace__input"
                   type="url"
@@ -788,20 +1086,89 @@ export function PlaylistWorkspace({
                 <p className="playlist-workspace__meta-label">Playlist Code</p>
                 <p className="playlist-workspace__live-code">{publishedCode}</p>
               </div>
+              <div className="playlist-workspace__live-now-playing">
+                <p className="playlist-workspace__meta-label">Now Playing</p>
+                <strong className="playlist-workspace__live-song">
+                  <MarqueeText
+                    text={publishedCurrentSong?.title ?? "Waiting to start"}
+                  />
+                </strong>
+                <p className="playlist-workspace__live-meta">
+                  <MarqueeText
+                    text={
+                      publishedCurrentSong
+                        ? formatSongMeta(publishedCurrentSong)
+                        : currentBatchIndex < songBatches.length
+                          ? `Voting is open for batch ${currentBatchIndex + 1}.`
+                          : "No vote batch is active right now."
+                    }
+                  />
+                </p>
+              </div>
               <div className="playlist-workspace__live-stats">
                 <span className="playlist-workspace__pill">
                   {songsPlayedBefore.length} played
                 </span>
                 <span className="playlist-workspace__pill">
                   {songBatches.length
-                    ? `${Math.min(currentBatchIndex + 1, songBatches.length)}/${songBatches.length} current`
+                    ? currentBatchIndex < songBatches.length
+                      ? `Batch ${currentBatchIndex + 1}/${songBatches.length} voting`
+                      : "No vote batch left"
                     : "0/0 current"}
                 </span>
+                {isCreator ? (
+                  <button
+                    type="button"
+                    className="playlist-workspace__banner-button playlist-workspace__abort-button"
+                    onClick={handleAbortSession}
+                    disabled={busy}
+                  >
+                    Abort
+                  </button>
+                ) : null}
               </div>
             </div>
           ) : null}
 
           {error ? <p className="playlist-workspace__error">{error}</p> : null}
+
+          {!isVoteMode && !isPublished && hasSongs ? (
+            <div className="playlist-workspace__opening-picker">
+              <div className="playlist-workspace__opening-picker-copy">
+                <div className="playlist-workspace__opening-picker-heading">
+                  <p className="playlist-workspace__songs-eyebrow">Opening song</p>
+                  <button
+                    type="button"
+                    className={`playlist-workspace__banner-button playlist-workspace__selection-button${
+                      isSelectingOpeningSong
+                        ? " playlist-workspace__selection-button--active"
+                        : ""
+                    }`}
+                    onClick={handleStartOpeningSelection}
+                    disabled={busy}
+                  >
+                    {isSelectingOpeningSong ? "Selecting" : "Select"}
+                  </button>
+                </div>
+                <div className="playlist-workspace__opening-preview">
+                  <strong className="playlist-workspace__opening-preview-title">
+                    {openingSong ? (
+                      <MarqueeText text={openingSong.title} />
+                    ) : (
+                      "Select the first song"
+                    )}
+                  </strong>
+                  <span className="playlist-workspace__opening-preview-meta">
+                    {openingSong ? (
+                      <MarqueeText text={formatSongMeta(openingSong)} />
+                    ) : (
+                      "Create batches to choose the opener."
+                    )}
+                  </span>
+                </div>
+              </div>
+            </div>
+          ) : null}
 
           <div className="playlist-workspace__batch-pane">
             <div className="playlist-workspace__songs-header">
@@ -896,18 +1263,18 @@ export function PlaylistWorkspace({
                     {activeBatch.map(({ song, index }, songIndex) => {
                       const isEditingTarget =
                         editingTarget?.globalIndex === index;
+                      const isLiveCurrentSong = publishedCurrentSong?.id === song.id;
                       const voteCount = getVoteCount(songwiseVote, songIndex);
-                      const canEditUpcomingBatch =
+                      const canSelectBatchSong =
                         !isVoteMode &&
-                        activeBatchStatus === "upcoming" &&
-                        (!isPublished || isCreator);
+                        (!isPublished || (activeBatchStatus === "upcoming" && isCreator));
 
                       return (
                         <article
                           key={`${song.id}-${index}`}
                           className={`playlist-song-card${
                             isEditingTarget ? " is-editing" : ""
-                          }`}
+                          }${isLiveCurrentSong ? " is-live-current" : ""}`}
                           role="button"
                           tabIndex={0}
                           onClick={() => handleBatchSongClick(song)}
@@ -944,7 +1311,7 @@ export function PlaylistWorkspace({
                               >
                                 ▶
                               </button>
-                              {activeBatchStatus === "ongoing" ? (
+                              {activeBatchStatus === "ongoing" && isPublished ? (
                                 <>
                                   <button
                                     type="button"
@@ -962,7 +1329,7 @@ export function PlaylistWorkspace({
                                   </span>
                                 </>
                               ) : null}
-                              {canEditUpcomingBatch ? (
+                              {canSelectBatchSong ? (
                                 <button
                                   type="button"
                                   className={`playlist-song-card__button playlist-song-card__button--wide${
@@ -972,17 +1339,22 @@ export function PlaylistWorkspace({
                                   }`}
                                   onClick={(event) => {
                                     event.stopPropagation();
-                                    setEditingTarget({
+                                    handleStartBatchSelection({
                                       batchIndex: displayedBatchIndex,
                                       globalIndex: index,
                                       songIndex,
                                     });
                                   }}
                                 >
-                                  {isEditingTarget ? "Editing" : "Edit"}
+                                  {isEditingTarget ? "Selecting" : "Select"}
                                 </button>
                               ) : null}
-                              {activeBatchStatus === "completed" ? (
+                              {isLiveCurrentSong ? (
+                                <span className="playlist-song-card__pill playlist-song-card__pill--live">
+                                  Playing Now
+                                </span>
+                              ) : null}
+                              {activeBatchStatus === "completed" && !isLiveCurrentSong ? (
                                 <span className="playlist-song-card__pill">
                                   Played
                                 </span>
@@ -1011,9 +1383,6 @@ export function PlaylistWorkspace({
 
         <aside className="playlist-workspace__songs-pane">
           <div className="playlist-workspace__session-bar">
-            <span className="playlist-workspace__pill">
-              Signed in as {authSession?.email}
-            </span>
             <button
               type="button"
               className="playlist-workspace__secondary playlist-workspace__secondary--compact"
@@ -1095,15 +1464,30 @@ export function PlaylistWorkspace({
                               {playlist.owner} · {playlist.songs.length} songs
                             </p>
                           </div>
-                          <a
-                            className="playlist-workspace__loaded-link"
-                            href={playlist.sourceUrl}
-                            target="_blank"
-                            rel="noreferrer"
-                            onClick={(event) => event.stopPropagation()}
-                          >
-                            Open
-                          </a>
+                          <div className="playlist-workspace__loaded-actions">
+                            <a
+                              className="playlist-workspace__loaded-link"
+                              href={playlist.sourceUrl}
+                              target="_blank"
+                              rel="noreferrer"
+                              onClick={(event) => event.stopPropagation()}
+                            >
+                              Open
+                            </a>
+                            {!isPublished ? (
+                              <button
+                                type="button"
+                                className="playlist-workspace__loaded-remove"
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  handleRemoveLoadedPlaylist(playlist.id);
+                                }}
+                                disabled={busy}
+                              >
+                                Remove Playlist
+                              </button>
+                            ) : null}
+                          </div>
                         </article>
                       </div>
                     ))}
@@ -1161,19 +1545,24 @@ export function PlaylistWorkspace({
             </div>
           </div>
 
-          {editingTargetSong && !isVoteMode ? (
+          {selectionMode && !isVoteMode ? (
             <div className="playlist-workspace__edit-banner">
               <div>
-                <p className="playlist-workspace__edit-label">Edit Active</p>
+                <p className="playlist-workspace__edit-label">
+                  {selectionMode === "opening"
+                    ? "Opening Song Selection"
+                    : "Batch Song Selection"}
+                </p>
                 <p className="playlist-workspace__edit-copy">
-                  Choose a song from the full list to replace{" "}
-                  {editingTargetSong.title} in the upcoming batch.
+                  {selectionMode === "opening"
+                    ? "Click one song in the full song list to make it the opening song."
+                    : `Click one song in the full song list to replace ${editingTargetSong?.title ?? "this batch slot"}.`}
                 </p>
               </div>
               <button
                 type="button"
                 className="playlist-workspace__banner-button"
-                onClick={() => setEditingTarget(null)}
+                onClick={handleCancelSelection}
               >
                 Cancel
               </button>
@@ -1197,7 +1586,7 @@ export function PlaylistWorkspace({
                 type="button"
                 className="playlist-workspace__secondary playlist-workspace__search-action"
                 onClick={createBatchesFromOrderedSongs}
-                disabled={!hasSongs || isPublished || busy}
+                disabled={!hasSongs || isPublished || busy || selectionMode !== null}
               >
                 Create Batches
               </button>
@@ -1209,20 +1598,20 @@ export function PlaylistWorkspace({
               filteredSongEntries.length ? (
                 <div className="playlist-workspace__library-list">
                   {filteredSongEntries.map(({ song, index }) => {
-                    const canSelectReplacement = editingTarget !== null;
+                    const isSelectable = !isVoteMode && selectionMode !== null;
 
                     return (
                       <article
                         key={`${song.id}-${index}`}
                         className={`playlist-song-card playlist-song-card--library${
-                          canSelectReplacement && !isVoteMode ? " is-selectable" : ""
+                          isSelectable ? " is-selectable" : ""
                         }`}
                         role="button"
                         tabIndex={0}
-                        onClick={() => handleLibrarySongClick(song)}
+                        onClick={() => handleLibrarySongClick(song, index)}
                         onKeyDown={(event) =>
                           handleSongCardKeyDown(event, () =>
-                            handleLibrarySongClick(song)
+                            handleLibrarySongClick(song, index)
                           )
                         }
                       >
@@ -1262,7 +1651,12 @@ export function PlaylistWorkspace({
                                     event.stopPropagation();
                                     moveSong(index, -1);
                                   }}
-                                  disabled={index === 0 || isPublished || busy}
+                                  disabled={
+                                    index === 0 ||
+                                    isPublished ||
+                                    busy ||
+                                    selectionMode !== null
+                                  }
                                   aria-label={`Move ${song.title} up`}
                                 >
                                   ↑
@@ -1275,26 +1669,16 @@ export function PlaylistWorkspace({
                                     moveSong(index, 1);
                                   }}
                                   disabled={
-                                    index === songs.length - 1 || isPublished || busy
+                                    index === songs.length - 1 ||
+                                    isPublished ||
+                                    busy ||
+                                    selectionMode !== null
                                   }
                                   aria-label={`Move ${song.title} down`}
                                 >
                                   ↓
                                 </button>
                               </>
-                            ) : null}
-                            {canSelectReplacement && !isVoteMode ? (
-                              <button
-                                type="button"
-                                className="playlist-song-card__button playlist-song-card__button--wide playlist-song-card__button--select"
-                                onClick={(event) => {
-                                  event.stopPropagation();
-                                  void selectReplacementSong(index);
-                                }}
-                                disabled={busy}
-                              >
-                                Select
-                              </button>
                             ) : null}
                           </div>
                         </div>
@@ -1396,6 +1780,30 @@ function normalizePlaylistForWorkspace(playlist: PlaylistData, playlistIndex: nu
       };
     }),
   };
+}
+
+function replacePlaylistSongs(
+  currentSongs: PlaylistSong[],
+  targetPlaylistId: string,
+  replacementSongs: PlaylistSong[]
+) {
+  const firstMatchIndex = currentSongs.findIndex(
+    (song) => song.originPlaylistId === targetPlaylistId
+  );
+
+  if (firstMatchIndex === -1) {
+    return currentSongs;
+  }
+
+  const nextSongs = currentSongs.filter(
+    (song) => song.originPlaylistId !== targetPlaylistId
+  );
+
+  return [
+    ...nextSongs.slice(0, firstMatchIndex),
+    ...replacementSongs,
+    ...nextSongs.slice(firstMatchIndex),
+  ];
 }
 
 function formatSongMeta(song: PlaylistSong) {
