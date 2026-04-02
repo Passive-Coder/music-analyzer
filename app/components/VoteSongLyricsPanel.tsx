@@ -50,11 +50,6 @@ export function VoteSongLyricsPanel({
       >
         PLAYER
       </button>
-      <div className="vote-song-player__lyrics-header">
-        <p className="playlist-workspace__songs-eyebrow">Lyrics</p>
-        <strong className="vote-song-player__lyrics-song">{songTitle}</strong>
-        <span className="vote-song-player__lyrics-artist">{artistText}</span>
-      </div>
       <div className="vote-song-player__lyrics-body">
         {status === "loading" ? (
           <p className="vote-song-player__lyrics-empty">Loading synced lyrics...</p>

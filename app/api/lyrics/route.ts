@@ -15,6 +15,8 @@ type LrcLibResponse = {
 const LRCLIB_BASE_URL = "https://lrclib.net/api";
 const execFileAsync = promisify(execFile);
 const PYTHON_EXECUTABLE = process.env.PYTHON_EXECUTABLE || "python";
+const LYRICS_CACHE_TTL_MS = 30 * 60 * 1_000;
+const lyricsCache = new Map<string, { expiresAt: number; payload: unknown }>();
 
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
@@ -34,54 +36,95 @@ export async function GET(request: Request) {
   const duration = Number.isFinite(durationMs) && durationMs > 0
     ? Math.max(1, Math.round(durationMs / 1000))
     : undefined;
+  const cacheKey = JSON.stringify({
+    album,
+    artist,
+    durationMs,
+    title,
+    videoId,
+  });
+  const cached = lyricsCache.get(cacheKey);
+
+  if (cached && cached.expiresAt > Date.now()) {
+    return Response.json(cached.payload);
+  }
 
   try {
-    try {
-      const ytmusicResult = await getYouTubeMusicLyrics({
-        album,
-        artist,
-        durationMs,
-        title,
-        videoId,
-      });
-
-      if (ytmusicResult.trackLyrics?.lines.length) {
-        return Response.json({
-          lyrics: ytmusicResult.trackLyrics,
-          plainLyrics: ytmusicResult.plainLyrics ?? null,
-          provider: "ytmusicapi",
-          source: ytmusicResult.source ?? null,
-          syncedLyrics: null,
-          status: "ok",
-        });
-      }
-    } catch {
-      // Fall back to LRCLIB when the unofficial YouTube Music path fails.
-    }
-
-    const bestMatch = await getLyricsMatch({
+    const ytmusicPromise = getYouTubeMusicLyrics({
+      album,
+      artist,
+      durationMs,
+      title,
+      videoId,
+    }).catch(() => null);
+    const lrclibPromise = getLyricsMatch({
       album,
       artist,
       duration,
       title,
     });
+    const bestMatch = await lrclibPromise;
 
-    if (!bestMatch?.syncedLyrics) {
-      return Response.json({
-        lyrics: null,
-        plainLyrics: bestMatch?.plainLyrics ?? null,
-        syncedLyrics: null,
-        status: "not-found",
-      });
+    if (!videoId && bestMatch?.syncedLyrics) {
+      const payload = {
+        lyrics: parseSyncedLyrics(bestMatch.syncedLyrics),
+        plainLyrics: bestMatch.plainLyrics ?? null,
+        provider: "lrclib",
+        syncedLyrics: bestMatch.syncedLyrics,
+        status: "ok",
+      };
+      rememberLyrics(cacheKey, payload);
+      return Response.json(payload);
     }
 
-    return Response.json({
-      lyrics: parseSyncedLyrics(bestMatch.syncedLyrics),
-      plainLyrics: bestMatch.plainLyrics ?? null,
-      provider: "lrclib",
-      syncedLyrics: bestMatch.syncedLyrics,
-      status: "ok",
-    });
+    const ytmusicResult = await withTimeout(videoId ? 14_000 : 26_000, ytmusicPromise);
+
+    if (ytmusicResult?.trackLyrics?.lines.length) {
+      const payload = {
+        lyrics: ytmusicResult.trackLyrics,
+        plainLyrics: ytmusicResult.plainLyrics ?? null,
+        provider: "ytmusicapi",
+        source: ytmusicResult.source ?? null,
+        syncedLyrics: null,
+        status: "ok",
+      };
+      rememberLyrics(cacheKey, payload);
+      return Response.json(payload);
+    }
+
+    if (bestMatch?.syncedLyrics) {
+      const payload = {
+        lyrics: parseSyncedLyrics(bestMatch.syncedLyrics),
+        plainLyrics: bestMatch.plainLyrics ?? null,
+        provider: "lrclib",
+        syncedLyrics: bestMatch.syncedLyrics,
+        status: "ok",
+      };
+      rememberLyrics(cacheKey, payload);
+      return Response.json(payload);
+    }
+
+    if (ytmusicResult?.plainLyrics) {
+      const payload = {
+        lyrics: null,
+        plainLyrics: ytmusicResult.plainLyrics,
+        provider: "ytmusicapi",
+        source: ytmusicResult.source ?? null,
+        syncedLyrics: null,
+        status: "not-found",
+      };
+      rememberLyrics(cacheKey, payload);
+      return Response.json(payload);
+    }
+
+    const payload = {
+      lyrics: null,
+      plainLyrics: bestMatch?.plainLyrics ?? null,
+      syncedLyrics: null,
+      status: "not-found",
+    };
+    rememberLyrics(cacheKey, payload);
+    return Response.json(payload);
   } catch {
     return Response.json(
       { lyrics: null, plainLyrics: null, syncedLyrics: null, status: "error" },
@@ -131,6 +174,30 @@ async function getYouTubeMusicLyrics({
     status?: string;
     trackLyrics?: TrackLyrics | null;
   };
+}
+
+async function withTimeout<T>(timeoutMs: number, promise: Promise<T>) {
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+
+  return await Promise.race<T | null>([
+    promise,
+    new Promise<null>((resolve) => {
+      timeoutId = setTimeout(() => {
+        resolve(null);
+      }, timeoutMs);
+    }),
+  ]).finally(() => {
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+    }
+  });
+}
+
+function rememberLyrics(cacheKey: string, payload: unknown) {
+  lyricsCache.set(cacheKey, {
+    expiresAt: Date.now() + LYRICS_CACHE_TTL_MS,
+    payload,
+  });
 }
 
 async function getLyricsMatch({

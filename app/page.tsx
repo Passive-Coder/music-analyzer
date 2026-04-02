@@ -55,9 +55,14 @@ export default function Home() {
   const isPlayButtonVisible = viewState === "home" || viewState === "choice";
   const isScenePromoted = false;
   const isPlaylistWorkspaceVisible =
-    viewState === "publish" || viewState === "vote";
+    viewState === "publish" ||
+    viewState === "vote" ||
+    viewState === "toPublish" ||
+    viewState === "toVote";
   const isPlaylistThemeActive =
     viewState !== "home" && viewState !== "choice";
+  const isPlaylistTransitionActive =
+    viewState === "toPublish" || viewState === "toVote";
   const noteTextureFill =
     noteDock === "top-left" ? voteVolumeLevel / 100 : 0;
 
@@ -99,7 +104,7 @@ export default function Home() {
       <PageBackground isPlaylistMode={isPlaylistThemeActive} />
       <div
         className={`page-playlist-transition${
-          isPlaylistThemeActive ? " is-active" : ""
+          isPlaylistTransitionActive ? " is-active" : ""
         }`}
         aria-hidden="true"
       />

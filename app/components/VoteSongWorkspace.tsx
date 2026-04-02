@@ -844,9 +844,6 @@ export function VoteSongWorkspace({
                             disabled={!canVote || voteState !== "idle"}
                           >
                             <div className="vote-song-workspace__piano-key-content">
-                              <span className="vote-song-workspace__piano-key-label">
-                                
-                              </span>
                               <strong>
                                 <MarqueeText text={song?.title ?? "Empty"} />
                               </strong>
@@ -890,11 +887,7 @@ export function VoteSongWorkspace({
                               currentValue === key.label ? null : currentValue
                             );
                           }}
-                        >
-                          <span className="vote-song-workspace__piano-black-label">
-                            
-                          </span>
-                        </div>
+                        />
                       ))}
                     </div>
                   </div>
@@ -1288,6 +1281,7 @@ function VoteSongPlayerPanel({
   const hostRef = useRef<HTMLDivElement>(null);
   const playerRef = useRef<YouTubePlayer | null>(null);
   const progressIntervalRef = useRef<number | null>(null);
+  const onPlaybackProgressRef = useRef(onPlaybackProgress);
   const resolvedVolume = Math.max(0, Math.min(100, volumeLevel));
   const volumeRef = useRef(resolvedVolume);
   const [roomNowMs, setRoomNowMs] = useState(() => Date.now());
@@ -1301,13 +1295,9 @@ function VoteSongPlayerPanel({
   const [durationSeconds, setDurationSeconds] = useState(0);
   const [screenMode, setScreenMode] = useState<"now-playing" | "lyrics">("now-playing");
   const streamSongId = song?.id ?? null;
-  const streamDurationMs = song?.durationMs ?? 0;
   const videoId = song ? getSongVideoId(song) : null;
   const fallbackDurationSeconds = song ? song.durationMs / 1000 : 0;
-  const displayedDurationSeconds =
-    song && startedAt && videoId
-      ? durationSeconds || fallbackDurationSeconds
-      : fallbackDurationSeconds;
+  const displayedDurationSeconds = durationSeconds || fallbackDurationSeconds;
   const fallbackCurrentSeconds =
     song && startedAt
       ? Math.min(
@@ -1316,7 +1306,7 @@ function VoteSongPlayerPanel({
         )
       : 0;
   const displayedCurrentSeconds =
-    playerClock.songId === streamSongId
+    playerClock.songId === streamSongId && playerClock.currentSeconds > 0
       ? Math.min(
           Math.max(playerClock.currentSeconds, 0),
           displayedDurationSeconds || fallbackDurationSeconds
@@ -1330,23 +1320,11 @@ function VoteSongPlayerPanel({
   }, []);
 
   useEffect(() => {
-    const player = playerRef.current;
-
-    volumeRef.current = resolvedVolume;
-
-    if (!player) {
-      return;
-    }
-
-    player.setVolume(resolvedVolume);
-  }, [resolvedVolume]);
+    onPlaybackProgressRef.current = onPlaybackProgress;
+  }, [onPlaybackProgress]);
 
   useEffect(() => {
     if (!song || !startedAt) {
-      onPlaybackProgress?.({
-        currentSeconds: null,
-        songId: streamSongId,
-      });
       return;
     }
 
@@ -1361,11 +1339,23 @@ function VoteSongPlayerPanel({
     return () => {
       window.cancelAnimationFrame(frameId);
     };
-  }, [onPlaybackProgress, song, startedAt, streamSongId]);
+  }, [song, startedAt]);
+
+  useEffect(() => {
+    const player = playerRef.current;
+
+    volumeRef.current = resolvedVolume;
+
+    if (!player) {
+      return;
+    }
+
+    player.setVolume(resolvedVolume);
+  }, [resolvedVolume]);
 
   useEffect(() => {
     if (!streamSongId || !startedAt || !hostRef.current || !videoId) {
-      onPlaybackProgress?.({
+      onPlaybackProgressRef.current?.({
         currentSeconds: null,
         songId: streamSongId,
       });
@@ -1410,7 +1400,7 @@ function VoteSongPlayerPanel({
                   currentSeconds: value,
                   songId: streamSongId,
                 });
-                onPlaybackProgress?.({
+                onPlaybackProgressRef.current?.({
                   currentSeconds: value,
                   songId: streamSongId,
                 });
@@ -1431,7 +1421,7 @@ function VoteSongPlayerPanel({
                   currentSeconds: value,
                   songId: streamSongId,
                 });
-                onPlaybackProgress?.({
+                onPlaybackProgressRef.current?.({
                   currentSeconds: value,
                   songId: streamSongId,
                 });
@@ -1440,7 +1430,7 @@ function VoteSongPlayerPanel({
             });
           },
         },
-        height: "0",
+        height: "1",
         playerVars: {
           autoplay: 1,
           controls: 0,
@@ -1452,19 +1442,19 @@ function VoteSongPlayerPanel({
           rel: 0,
         },
         videoId,
-        width: "0",
+        width: "1",
       });
     });
 
     return () => {
       cancelled = true;
-      onPlaybackProgress?.({
+      onPlaybackProgressRef.current?.({
         currentSeconds: null,
         songId: streamSongId,
       });
       destroyYouTubePlayer(playerRef, progressIntervalRef);
     };
-  }, [onPlaybackProgress, startedAt, streamDurationMs, streamSongId, videoId]);
+  }, [startedAt, streamSongId, videoId]);
 
   const progress =
     displayedDurationSeconds > 0
@@ -1475,6 +1465,7 @@ function VoteSongPlayerPanel({
     const clampedVolume = Math.max(0, Math.min(100, nextVolume));
     volumeRef.current = clampedVolume;
     playerRef.current?.setVolume(clampedVolume);
+    playerRef.current?.playVideo();
     onVolumeChange?.(clampedVolume);
   };
 
@@ -1575,16 +1566,6 @@ function VoteSongPlayerPanel({
               <div className="vote-song-player__wheel-ring">
                 <button
                   type="button"
-                  className="vote-song-player__wheel-button vote-song-player__wheel-button--top"
-                  onClick={() => {
-                    setScreenMode("lyrics");
-                  }}
-                  aria-pressed={false}
-                >
-                  LYRICS
-                </button>
-                <button
-                  type="button"
                   className="vote-song-player__wheel-button vote-song-player__wheel-button--left"
                   onClick={() => updateVolume(resolvedVolume - 8)}
                   aria-label="Lower volume"
@@ -1600,7 +1581,7 @@ function VoteSongPlayerPanel({
                   VOL +
                 </button>
                 <span className="vote-song-player__wheel-room">
-                  {code ? `ROOM ${code}` : "ROOM"}
+                  {code || "----"}
                 </span>
                 <div className="vote-song-player__wheel-center">
                   <span>VOL</span>
@@ -1689,7 +1670,7 @@ function destroyYouTubePlayer(
   intervalRef: MutableRefObject<number | null>
 ) {
   if (intervalRef.current !== null) {
-    window.clearInterval(intervalRef.current);
+    window.cancelAnimationFrame(intervalRef.current);
     intervalRef.current = null;
   }
 
@@ -1709,7 +1690,7 @@ function startPlayerProgressTracking(
   }
 ) {
   if (intervalRef.current !== null) {
-    window.clearInterval(intervalRef.current);
+    window.cancelAnimationFrame(intervalRef.current);
   }
 
   const updateProgress = () => {
@@ -1727,10 +1708,11 @@ function startPlayerProgressTracking(
     } catch {
       // Ignore transient iframe timing errors.
     }
+
+    intervalRef.current = window.requestAnimationFrame(updateProgress);
   };
 
-  updateProgress();
-  intervalRef.current = window.setInterval(updateProgress, 72);
+  intervalRef.current = window.requestAnimationFrame(updateProgress);
 }
 
 function normalizeCode(code: string) {

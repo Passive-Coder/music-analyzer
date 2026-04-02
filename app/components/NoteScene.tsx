@@ -280,7 +280,7 @@ export function NoteScene({
         topRightTargetPosition.copy(
           screenToWorldOnPlane(
             camera,
-            width - Math.min(width * 0.055, 70),
+            width - Math.min(width * 0.1, 140),
             Math.max(height * 0.095, 64),
             width,
             height,
@@ -290,8 +290,8 @@ export function NoteScene({
         topLeftTargetPosition.copy(
           screenToWorldOnPlane(
             camera,
-            Math.min(width * 0.055, 70),
-            Math.max(height * 0.095, 64),
+            Math.min(width * 0.1, 132),
+            Math.max(height * 0.1, 68),
             width,
             height,
             0

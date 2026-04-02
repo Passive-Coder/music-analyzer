@@ -187,9 +187,9 @@ export function MusicVisualizerSphere({
         tempoMs,
         beatAnchorMs
       );
-      smoothedPulse = THREE.MathUtils.lerp(smoothedPulse, targetPulse, 0.22);
+      smoothedPulse = THREE.MathUtils.lerp(smoothedPulse, targetPulse, 0.3);
       const pulse = Math.max(targetPulse, smoothedPulse);
-      const scale = 1 + pulse * 0.16 + roomEnergy * 0.03;
+      const scale = 1 + pulse * 0.2 + roomEnergy * 0.04;
 
       sphereRig.rotation.y += 0.002 + pulse * 0.0045;
       sphereRig.rotation.x = Math.sin(elapsed * 0.32) * 0.08;
