@@ -983,7 +983,7 @@ export function PlaylistWorkspace({
     clearPublishedSession();
   };
 
-  const handleBatchSongClick = (song: PlaylistSong) => {
+  const handleBatchSongClick = () => {
     // Playback on click disabled at user request.
   };
 
