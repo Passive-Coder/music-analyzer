@@ -7,6 +7,7 @@ import type {
   ActivePlaylistState,
   PlaylistData,
   PlaylistSong,
+  PreviousPlaylistResults,
   PublishedPlaylistRecord,
   SongwiseVote,
 } from "../lib/playlist-types";
@@ -42,6 +43,7 @@ type ActivePlaylistDocument = {
   currentSong?: PlaylistSong | null;
   currentSongId?: string | null;
   currentSongStartedAt?: string | null;
+  previousResults?: PreviousPlaylistResults | null;
   songList: ActivePlaylistSongVote[];
   songsPlayedBefore: PlaylistSong[];
   updatedAt: string;
@@ -493,6 +495,13 @@ export const advanceCurrentBatch = mutation({
       currentSongStartedAt: nowIso,
       currentBatch: nextCurrentBatch,
       currentBatchIndex: nextBatchIndex,
+      previousResults:
+        synced.active.currentBatch.length > 0
+          ? {
+              batch: synced.active.currentBatch.map((song) => ({ ...song })),
+              songList: synced.active.songList.map((entry) => ({ ...entry })),
+            }
+          : synced.active.previousResults ?? null,
       songList: buildActiveSongList(nextCurrentBatch),
       songsPlayedBefore: nextPlayedSongs,
       updatedAt: nowIso,
@@ -761,6 +770,7 @@ function buildActivePlaylistSeed(
     currentSong,
     currentSongId: currentSong?.id ?? null,
     currentSongStartedAt,
+    previousResults: null,
     songList: buildActiveSongList(published.currentBatch),
     songsPlayedBefore: published.songsPlayedBefore,
     updatedAt: published.updatedAt ?? nowIso,
@@ -807,6 +817,12 @@ function syncActivePlaybackState(
     currentSong: active.currentSong ? { ...active.currentSong } : null,
     currentSongId: active.currentSongId ?? null,
     currentSongStartedAt: active.currentSongStartedAt ?? null,
+    previousResults: active.previousResults
+      ? {
+          batch: active.previousResults.batch.map((song) => ({ ...song })),
+          songList: active.previousResults.songList.map((entry) => ({ ...entry })),
+        }
+      : null,
     songList: active.songList.map((entry) => ({ ...entry })),
     songsPlayedBefore: [...active.songsPlayedBefore],
     voterSelections: active.voterSelections.map((selection) => ({
@@ -879,6 +895,13 @@ function syncActivePlaybackState(
       nextPublished.batches.length
     );
     const nextBatch = nextPublished.batches[nextBatchIndex] ?? [];
+    const previousResults =
+      nextActive.currentBatch.length > 0
+        ? {
+            batch: nextActive.currentBatch.map((song) => ({ ...song })),
+            songList: nextActive.songList.map((entry) => ({ ...entry })),
+          }
+        : nextActive.previousResults ?? null;
 
     nextPublished = {
       ...nextPublished,
@@ -891,6 +914,7 @@ function syncActivePlaybackState(
       currentBatch: [...nextBatch],
       currentBatchIndex: nextBatchIndex,
       songList: buildActiveSongList(nextBatch),
+      previousResults,
       voterSelections: [],
       updatedAt: nowIso,
     };
@@ -1088,6 +1112,7 @@ async function patchSyncedPlaylistState(
     currentSong: active.currentSong ?? null,
     currentSongId: active.currentSongId ?? null,
     currentSongStartedAt: active.currentSongStartedAt ?? null,
+    previousResults: active.previousResults ?? null,
     songList: active.songList,
     songsPlayedBefore: active.songsPlayedBefore,
     updatedAt: active.updatedAt,
@@ -1158,6 +1183,7 @@ function toActivePlaylistState(
       null,
     currentSongId: active.currentSongId ?? null,
     currentSongStartedAt: active.currentSongStartedAt ?? null,
+    previousResults: active.previousResults ?? null,
     playedSongs: active.songsPlayedBefore,
     songList: active.songList,
     updatedAt: active.updatedAt,

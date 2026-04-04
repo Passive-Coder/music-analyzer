@@ -6,6 +6,7 @@ import {
   activePlaylistVoterSelectionValidator,
   playlistDataValidator,
   playlistSongValidator,
+  previousPlaylistResultsValidator,
   songwiseVoteValidator,
 } from "./validators";
 
@@ -17,6 +18,9 @@ export default defineSchema({
     currentSong: v.optional(v.union(playlistSongValidator, v.null())),
     currentSongId: v.optional(v.union(v.string(), v.null())),
     currentSongStartedAt: v.optional(v.union(v.string(), v.null())),
+    previousResults: v.optional(
+      v.union(previousPlaylistResultsValidator, v.null())
+    ),
     songList: v.array(activePlaylistSongVoteValidator),
     songsPlayedBefore: v.array(playlistSongValidator),
     updatedAt: v.string(),

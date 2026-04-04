@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  startTransition,
   useEffect,
   useMemo,
   useRef,
@@ -148,6 +149,7 @@ export function PlaylistWorkspace({
   onVoteVolumeChange,
   voteVolumeLevel = 72,
 }: PlaylistWorkspaceProps) {
+  const hasLoadedPublishAuthRef = useRef(false);
   const [hasMounted, setHasMounted] = useState(false);
   const [playlistUrl, setPlaylistUrl] = useState("");
   const [authState, setAuthState] = useState<AuthState>("loading");
@@ -182,6 +184,7 @@ export function PlaylistWorkspace({
     string | null
   >(null);
   const [playbackSong, setPlaybackSong] = useState<PlaylistSong | null>(null);
+  const [playbackStartSeconds, setPlaybackStartSeconds] = useState(0);
   const [playbackToken, setPlaybackToken] = useState(0);
   const convexClient = useMemo(() => getConvexBrowserClient(), []);
 
@@ -222,14 +225,17 @@ export function PlaylistWorkspace({
     : editingTarget !== null
       ? "batch"
       : null;
-  const playbackEmbedUrl = getSongEmbedUrl(playbackSong, playbackToken);
+  const playbackEmbedUrl =
+    isVisible && !isVoteMode
+      ? getSongEmbedUrl(playbackSong, playbackToken, playbackStartSeconds)
+      : null;
   const busy = requestState !== "idle" || mutationState !== "idle";
   useEffect(() => {
     setHasMounted(true);
   }, []);
 
   useEffect(() => {
-    if (!hasMounted || !isVisible) {
+    if (!hasMounted || !isVisible || isVoteMode || hasLoadedPublishAuthRef.current) {
       return;
     }
 
@@ -243,6 +249,8 @@ export function PlaylistWorkspace({
       if (isCancelled) {
         return;
       }
+
+      hasLoadedPublishAuthRef.current = true;
 
       if (!result.ok) {
         setAuthSession(null);
@@ -260,7 +268,7 @@ export function PlaylistWorkspace({
     return () => {
       isCancelled = true;
     };
-  }, [hasMounted, isVisible]);
+  }, [hasMounted, isVisible, isVoteMode]);
 
   useEffect(() => {
     if (
@@ -537,6 +545,32 @@ export function PlaylistWorkspace({
     isCreator,
     isVisible,
     publishedCode,
+    publishedCurrentSong,
+    publishedCurrentSongStartedAt,
+  ]);
+
+  useEffect(() => {
+    if (isVoteMode || !isVisible || !publishedCurrentSong || !publishedCurrentSongStartedAt) {
+      startTransition(() => {
+        setPlaybackSong(null);
+        setPlaybackStartSeconds(0);
+      });
+      return;
+    }
+
+    const startedAtMs = Date.parse(publishedCurrentSongStartedAt);
+    const nextStartSeconds = Number.isFinite(startedAtMs)
+      ? Math.max(Math.floor((Date.now() - startedAtMs) / 1000), 0)
+      : 0;
+
+    startTransition(() => {
+      setPlaybackSong(publishedCurrentSong);
+      setPlaybackStartSeconds(nextStartSeconds);
+      setPlaybackToken(Date.now());
+    });
+  }, [
+    isVisible,
+    isVoteMode,
     publishedCurrentSong,
     publishedCurrentSongStartedAt,
   ]);
@@ -950,7 +984,7 @@ export function PlaylistWorkspace({
   };
 
   const handleBatchSongClick = (song: PlaylistSong) => {
-    playSong(song);
+    // Playback on click disabled at user request.
   };
 
   const handleLibrarySongClick = (song: PlaylistSong, index: number) => {
@@ -965,7 +999,7 @@ export function PlaylistWorkspace({
       return;
     }
 
-    playSong(song);
+    // Playback on click disabled at user request.
   };
 
   const handleStartOpeningSelection = () => {
@@ -1015,46 +1049,31 @@ export function PlaylistWorkspace({
       {isVoteMode ? (
         <VoteSongWorkspace
           defaultCode={publishedCode}
+          isVisible={isVisible}
           onVolumeChange={onVoteVolumeChange}
           volumeLevel={voteVolumeLevel}
         />
       ) : !isAuthenticated ? (
         <div className="playlist-workspace__auth-layout">
-          <aside className="playlist-workspace__songs-pane playlist-workspace__songs-pane--auth">
-            <div className="playlist-workspace__header playlist-workspace__header--meta">
-              <div className="playlist-workspace__brand">
-                <div className="playlist-workspace__brand-copy">
-                  <p className="playlist-workspace__eyebrow">YouTube</p>
-                  <div className="playlist-workspace__brand-row">
-                    <YouTubeGlyph />
-                    <h2 className="playlist-workspace__title">
-                      {isVoteMode ? "Choose Song" : "Playlist"}
-                    </h2>
-                  </div>
-                </div>
-              </div>
+          {authState === "loading" ? (
+            <div className="playlist-workspace__auth-card">
+              <p className="playlist-workspace__songs-eyebrow">
+                Google Sign-In
+              </p>
+              <h3 className="playlist-workspace__songs-title">
+                Checking your Google session
+              </h3>
+              <p className="playlist-workspace__copy">
+                Hold on while Octave checks whether you are already signed in.
+              </p>
             </div>
+          ) : (
+            <GoogleSignInPanel mode={mode} onSignedIn={handleSignedIn} />
+          )}
 
-            {authState === "loading" ? (
-              <div className="playlist-workspace__auth-card">
-                <p className="playlist-workspace__songs-eyebrow">
-                  Google Sign-In
-                </p>
-                <h3 className="playlist-workspace__songs-title">
-                  Checking your Google session
-                </h3>
-                <p className="playlist-workspace__copy">
-                  Hold on while Octave checks whether you are already signed in.
-                </p>
-              </div>
-            ) : (
-              <GoogleSignInPanel mode={mode} onSignedIn={handleSignedIn} />
-            )}
-
-            {authError ? (
-              <p className="playlist-workspace__error">{authError}</p>
-            ) : null}
-          </aside>
+          {authError ? (
+            <p className="playlist-workspace__error">{authError}</p>
+          ) : null}
         </div>
       ) : (
         <>
@@ -1062,24 +1081,39 @@ export function PlaylistWorkspace({
         <div className="playlist-workspace__panel">
           {!isVoteMode ? (
             <div className="playlist-workspace__loader">
-              <label className="playlist-workspace__field">
-                <div style={{display: 'flex', flexDirection: 'row', justifyContent: 'space-around', alignItems: 'center'}}>
-                    <span className="playlist-workspace__label">
+              <div className="playlist-workspace__field">
+                <div className="playlist-workspace__field-header">
+                  <label htmlFor="playlist-url-input" className="playlist-workspace__label">
                     YouTube Playlist Link
-                  </span>
-                  <span className="playlist-workspace__pill">
-                    Signed in as {authSession?.email}
-                  </span>
+                  </label>
+                  <button
+                    type="button"
+                    className="playlist-workspace__session-pill-button"
+                    onClick={() => {
+                      void handleSignOut();
+                    }}
+                    aria-label={`Sign out ${authSession?.email ?? ""}`}
+                  >
+                    <span className="playlist-workspace__session-pill-track">
+                      <span className="playlist-workspace__session-pill-face playlist-workspace__session-pill-face--signed-in">
+                        Signed in as {authSession?.email}
+                      </span>
+                      <span className="playlist-workspace__session-pill-face playlist-workspace__session-pill-face--signout">
+                        Sign Out
+                      </span>
+                    </span>
+                  </button>
                 </div>
+                <div style={{display: 'flex', flexDirection: 'row', gap: 15}}>
                 <input
+                  id="playlist-url-input"
                   className="playlist-workspace__input"
                   type="url"
                   value={playlistUrl}
                   onChange={(event) => setPlaylistUrl(event.target.value)}
                   placeholder="https://music.youtube.com/playlist?list=..."
                 />
-              </label>
-              <button
+                <button
                 type="button"
                 className="playlist-workspace__primary"
                 onClick={handleLoadPlaylist}
@@ -1087,6 +1121,8 @@ export function PlaylistWorkspace({
               >
                 {requestState === "loading" ? "Loading..." : "Load Playlist"}
               </button>
+              </div>
+              </div>
             </div>
           ) : null}
 
@@ -1183,9 +1219,8 @@ export function PlaylistWorkspace({
           <div className="playlist-workspace__batch-pane">
             <div className="playlist-workspace__songs-header">
               <div>
-                <p className="playlist-workspace__songs-eyebrow">Batches</p>
                 <h3 className="playlist-workspace__songs-title playlist-workspace__songs-title--compact">
-                  {isVoteMode ? "Vote For The Next Song" : "Ordered Groups Of 5"}
+                  {isVoteMode ? "Vote For The Next Song" : "Batches"}
                 </h3>
               </div>
               <div className="playlist-workspace__batch-nav">
@@ -1270,30 +1305,38 @@ export function PlaylistWorkspace({
                   </div>
 
                   <div className="playlist-batch__list">
-                    {activeBatch.map(({ song, index }, songIndex) => {
-                      const isEditingTarget =
-                        editingTarget?.globalIndex === index;
-                      const isLiveCurrentSong = publishedCurrentSong?.id === song.id;
-                      const voteCount = getVoteCount(songwiseVote, songIndex);
-                      const canSelectBatchSong =
-                        !isVoteMode &&
-                        (!isPublished || (activeBatchStatus === "upcoming" && isCreator));
+                    {(() => {
+                      const currentSongGlobalIndex = publishedCurrentSong
+                        ? batchSongs.findIndex((s) => s.id === publishedCurrentSong.id)
+                        : -1;
 
-                      return (
-                        <article
-                          key={`${song.id}-${index}`}
-                          className={`playlist-song-card${
-                            isEditingTarget ? " is-editing" : ""
-                          }${isLiveCurrentSong ? " is-live-current" : ""}`}
-                          role="button"
-                          tabIndex={0}
-                          onClick={() => handleBatchSongClick(song)}
-                          onKeyDown={(event) =>
-                            handleSongCardKeyDown(event, () =>
-                              handleBatchSongClick(song)
-                            )
-                          }
-                        >
+                      return activeBatch.map(({ song, index }, songIndex) => {
+                        const isEditingTarget =
+                          editingTarget?.globalIndex === index;
+                        const isLiveCurrentSong = currentSongGlobalIndex !== -1 && index === currentSongGlobalIndex;
+                        const isActuallyPlayed = songsPlayedBefore.some((s) => s.id === song.id);
+                        const isHandledBeforeCurrent = currentSongGlobalIndex !== -1 && index < currentSongGlobalIndex;
+
+                        const voteCount = getVoteCount(songwiseVote, songIndex);
+                        const canSelectBatchSong =
+                          !isVoteMode &&
+                          (!isPublished || (activeBatchStatus === "upcoming" && isCreator));
+
+                        return (
+                          <article
+                            key={`${song.id}-${index}`}
+                            className={`playlist-song-card${
+                              isEditingTarget ? " is-editing" : ""
+                            }${isLiveCurrentSong ? " is-live-current" : ""}`}
+                            role="button"
+                            tabIndex={0}
+                            onClick={() => handleBatchSongClick(song)}
+                            onKeyDown={(event) =>
+                              handleSongCardKeyDown(event, () =>
+                                handleBatchSongClick(song)
+                              )
+                            }
+                          >
                           <div className="playlist-song-card__order">
                             {String(index + 1).padStart(2, "0")}
                           </div>
@@ -1310,35 +1353,6 @@ export function PlaylistWorkspace({
                               {formatDuration(song.durationMs)}
                             </div>
                             <div className="playlist-song-card__controls">
-                              <button
-                                type="button"
-                                className="playlist-song-card__play-link"
-                                onClick={(event) => {
-                                  event.stopPropagation();
-                                  playSong(song);
-                                }}
-                                aria-label={`Play ${song.title}`}
-                              >
-                                ▶
-                              </button>
-                              {activeBatchStatus === "ongoing" && isPublished ? (
-                                <>
-                                  <button
-                                    type="button"
-                                    className="playlist-song-card__button playlist-song-card__button--wide"
-                                    onClick={(event) => {
-                                      event.stopPropagation();
-                                      void handleVoteForSong(songIndex);
-                                    }}
-                                    disabled={mutationState !== "idle"}
-                                  >
-                                    Vote
-                                  </button>
-                                  <span className="playlist-song-card__pill">
-                                    {voteCount} votes
-                                  </span>
-                                </>
-                              ) : null}
                               {canSelectBatchSong ? (
                                 <button
                                   type="button"
@@ -1363,18 +1377,22 @@ export function PlaylistWorkspace({
                                 <span className="playlist-song-card__pill playlist-song-card__pill--live">
                                   Playing Now
                                 </span>
-                              ) : null}
-                              {activeBatchStatus === "completed" && !isLiveCurrentSong ? (
+                              ) : isActuallyPlayed ? (
                                 <span className="playlist-song-card__pill">
                                   Played
+                                </span>
+                              ) : isHandledBeforeCurrent || activeBatchStatus === "completed" ? (
+                                <span className="playlist-song-card__pill">
+                                  Not Played
                                 </span>
                               ) : null}
                             </div>
                           </div>
                         </article>
                       );
-                    })}
-                  </div>
+                    })
+                  })()}
+                </div>
                 </section>
               ) : (
                 <div className="playlist-workspace__empty playlist-workspace__empty--songs">
@@ -1392,17 +1410,7 @@ export function PlaylistWorkspace({
         </div>
 
         <aside className="playlist-workspace__songs-pane">
-          <div className="playlist-workspace__session-bar">
-            <button
-              type="button"
-              className="playlist-workspace__secondary playlist-workspace__secondary--compact"
-              onClick={() => {
-                void handleSignOut();
-              }}
-            >
-              Sign Out
-            </button>
-          </div>
+
           <div className="playlist-workspace__header playlist-workspace__header--meta">
             <div className="playlist-workspace__brand">
               <div className="playlist-workspace__brand-copy">
@@ -1421,9 +1429,6 @@ export function PlaylistWorkspace({
             <div className="playlist-workspace__loaded-shell">
               <div className="playlist-workspace__songs-header playlist-workspace__songs-header--tight">
                 <div>
-                  <p className="playlist-workspace__songs-eyebrow">
-                    Loaded Playlists
-                  </p>
                   <h3 className="playlist-workspace__songs-title playlist-workspace__songs-title--compact">
                     Added Sources
                   </h3>
@@ -1531,22 +1536,11 @@ export function PlaylistWorkspace({
 
           <div className="playlist-workspace__songs-header">
             <div>
-              <p className="playlist-workspace__songs-eyebrow">Songs</p>
               <h3 className="playlist-workspace__songs-title">
                 {isVoteMode ? "Song Library" : "Full Song List"}
               </h3>
             </div>
             <div className="playlist-workspace__songs-side">
-              {!isVoteMode ? (
-                <button
-                  type="button"
-                  className="playlist-workspace__secondary"
-                  onClick={shuffleSongs}
-                  disabled={!hasSongs || isPublished || busy}
-                >
-                  Random Shuffle
-                </button>
-              ) : null}
               <p className="playlist-workspace__songs-count">
                 {hasSongs
                   ? `${filteredSongEntries.length} of ${songs.length} shown`
@@ -1582,7 +1576,6 @@ export function PlaylistWorkspace({
           {!isVoteMode ? (
             <div className="playlist-workspace__search-row">
               <label className="playlist-workspace__field playlist-workspace__field--search">
-                <span className="playlist-workspace__label">Search Songs</span>
                 <input
                   className="playlist-workspace__input"
                   type="search"
@@ -1600,6 +1593,16 @@ export function PlaylistWorkspace({
               >
                 Create Batches
               </button>
+              {!isVoteMode ? (
+                <button
+                  type="button"
+                  className="playlist-workspace__secondary"
+                  onClick={shuffleSongs}
+                  disabled={!hasSongs || isPublished || busy}
+                >
+                  Random Shuffle
+                </button>
+              ) : null}
             </div>
           ) : null}
 
@@ -1641,17 +1644,6 @@ export function PlaylistWorkspace({
                             {formatDuration(song.durationMs)}
                           </div>
                           <div className="playlist-song-card__controls">
-                            <button
-                              type="button"
-                              className="playlist-song-card__play-link"
-                              onClick={(event) => {
-                                event.stopPropagation();
-                                playSong(song);
-                              }}
-                              aria-label={`Play ${song.title}`}
-                            >
-                              ▶
-                            </button>
                             {!isVoteMode ? (
                               <>
                                 <button
@@ -1840,7 +1832,11 @@ function getSongPlaybackUrl(song: PlaylistSong) {
   return `https://music.youtube.com/search?q=${searchQuery}`;
 }
 
-function getSongEmbedUrl(song: PlaylistSong | null, playbackToken: number) {
+function getSongEmbedUrl(
+  song: PlaylistSong | null,
+  playbackToken: number,
+  startSeconds = 0
+) {
   if (!song) {
     return null;
   }
@@ -1851,7 +1847,9 @@ function getSongEmbedUrl(song: PlaylistSong | null, playbackToken: number) {
     return null;
   }
 
-  return `https://www.youtube.com/embed/${videoId}?autoplay=1&playsinline=1&rel=0&modestbranding=1&octavePlayback=${playbackToken}`;
+  const normalizedStartSeconds = Math.max(Math.floor(startSeconds), 0);
+
+  return `https://www.youtube.com/embed/${videoId}?autoplay=1&playsinline=1&rel=0&modestbranding=1&start=${normalizedStartSeconds}&octavePlayback=${playbackToken}`;
 }
 
 function getSongVideoId(song: PlaylistSong) {

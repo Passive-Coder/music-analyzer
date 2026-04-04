@@ -34,6 +34,9 @@ type ViewState =
 
 export default function Home() {
   const [viewState, setViewState] = useState<ViewState>("home");
+  const [workspaceMode, setWorkspaceMode] = useState<"publish" | "vote">(
+    "publish"
+  );
   const [publishEffectToken, setPublishEffectToken] = useState(0);
   const [isPublishImpactActive, setIsPublishImpactActive] = useState(false);
   const [voteVolumeLevel, setVoteVolumeLevel] = useState(72);
@@ -55,9 +58,20 @@ export default function Home() {
   const isPlayButtonVisible = viewState === "home" || viewState === "choice";
   const isScenePromoted = false;
   const isPlaylistWorkspaceVisible =
-    viewState === "publish" || viewState === "vote";
+    viewState === "publish" ||
+    viewState === "vote" ||
+    viewState === "toPublish" ||
+    viewState === "toVote";
+  const activeWorkspaceMode =
+    viewState === "toVote" || viewState === "vote"
+      ? "vote"
+      : viewState === "toPublish" || viewState === "publish"
+        ? "publish"
+        : workspaceMode;
   const isPlaylistThemeActive =
     viewState !== "home" && viewState !== "choice";
+  const isPlaylistTransitionActive =
+    viewState === "toPublish" || viewState === "toVote";
   const noteTextureFill =
     noteDock === "top-left" ? voteVolumeLevel / 100 : 0;
 
@@ -99,7 +113,7 @@ export default function Home() {
       <PageBackground isPlaylistMode={isPlaylistThemeActive} />
       <div
         className={`page-playlist-transition${
-          isPlaylistThemeActive ? " is-active" : ""
+          isPlaylistTransitionActive ? " is-active" : ""
         }`}
         aria-hidden="true"
       />
@@ -113,11 +127,13 @@ export default function Home() {
         isActive={isChoiceActive}
         onChooseSong={() => {
           if (viewState === "choice") {
+            setWorkspaceMode("vote");
             setViewState("toVote");
           }
         }}
         onPublishPlaylist={() => {
           if (viewState === "choice") {
+            setWorkspaceMode("publish");
             setViewState("toPublish");
           }
         }}
@@ -134,11 +150,13 @@ export default function Home() {
         }}
         onTransitionComplete={(dock) => {
           if (dock === "top-right") {
+            setWorkspaceMode("publish");
             setViewState("publish");
             return;
           }
 
           if (dock === "top-left") {
+            setWorkspaceMode("vote");
             setViewState("vote");
             return;
           }
@@ -146,10 +164,24 @@ export default function Home() {
           setViewState("home");
         }}
       />
+      {viewState === "publish" || viewState === "vote" ? (
+        <button
+          type="button"
+          className={`note-scene__page-button note-scene__page-button--${
+            viewState === "publish" ? "top-right" : "top-left"
+          }`}
+          aria-label="Return home"
+          onClick={() => {
+            setViewState("toHome");
+          }}
+        />
+      ) : null}
       <PlaylistWorkspace
         isVisible={isPlaylistWorkspaceVisible}
-        mode={viewState === "vote" ? "vote" : "publish"}
-        onPublish={triggerPublishEffect}
+        mode={activeWorkspaceMode}
+        onPublish={() => {
+          triggerPublishEffect();
+        }}
         onVoteVolumeChange={setVoteVolumeLevel}
         voteVolumeLevel={voteVolumeLevel}
       />

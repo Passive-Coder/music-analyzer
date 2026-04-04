@@ -11,8 +11,6 @@ const BASE_NOTE_TILT = -Math.PI / 12;
 const LOGO_MODE_SCALE = 0.28;
 const LOGO_TRANSITION_DURATION = 1.25;
 const FULL_ROTATION = Math.PI * 2;
-const NOTE_DOCK_MARGIN_X_PX = 9;
-const NOTE_DOCK_MARGIN_Y_PX = 9;
 const PUBLISH_RAINBOW_DURATION = 0.5;
 const PUBLISH_EFFECT_DURATION = 0.96;
 const HOME_NOTE_COLOR = new THREE.Color(0xc8dbff);
@@ -28,12 +26,20 @@ const LOGO_RIM_LIGHT_COLOR = new THREE.Color(0xb0d8ff);
 const HOME_FRONT_LIGHT_COLOR = new THREE.Color(0x7ba7ff);
 const LOGO_FRONT_LIGHT_COLOR = new THREE.Color(0xd7ebff);
 const LOGO_CLICK_TARGET_SIZE = new THREE.Vector3(8.8, 9.6, 4.4);
+const HOME_CAMERA_FOV = 34;
+const SPHERE_BASE_COLOR = new THREE.Color(0x2d6dff);
+const SPHERE_LIGHT_COLOR = new THREE.Color(0x92d8ff);
+const VISUALIZER_PARTICLE_BASE = new THREE.Color(0xaad8ff);
+const VISUALIZER_PARTICLE_COUNT = 420;
 type NoteDock = "center" | "top-right" | "top-left";
 
 type NoteSceneProps = {
   dock?: NoteDock;
+  isLogoMode?: boolean;
+  isPlayingMode?: boolean;
   isPromoted?: boolean;
   publishEffectToken?: number;
+  showLyrics?: boolean;
   volumeFill?: number;
   onNoteClick?: () => void;
   onTransitionComplete?: (dock: NoteDock) => void;
@@ -43,16 +49,27 @@ type VolumeWaveDirection = "inbound" | "outbound";
 
 export function NoteScene({
   dock = "center",
+  isLogoMode = false,
+  isPlayingMode = false,
   isPromoted = false,
   publishEffectToken = 0,
+  showLyrics = false,
   volumeFill = 0,
   onNoteClick,
   onTransitionComplete,
 }: NoteSceneProps) {
+  const effectiveDock =
+    dock !== "center"
+      ? dock
+      : isLogoMode && isPlayingMode && showLyrics
+        ? "top-right"
+        : "center";
   const containerRef = useRef<HTMLDivElement>(null);
   const waveLayerRef = useRef<HTMLDivElement>(null);
-  const dockRef = useRef<NoteDock>(dock);
-  const previousDockRef = useRef<NoteDock>(dock);
+  const dockRef = useRef<NoteDock>(effectiveDock);
+  const previousDockRef = useRef<NoteDock>(effectiveDock);
+  const isPlayingModeRef = useRef(isPlayingMode);
+  const showLyricsRef = useRef(showLyrics);
   const publishEffectTokenRef = useRef(publishEffectToken);
   const volumeFillRef = useRef(volumeFill);
   const previousVolumeFillRef = useRef(volumeFill);
@@ -64,8 +81,12 @@ export function NoteScene({
   } | null>(null);
 
   useEffect(() => {
-    dockRef.current = dock;
-  }, [dock]);
+    dockRef.current = effectiveDock;
+  }, [effectiveDock]);
+
+  useEffect(() => {
+    isPlayingModeRef.current = isPlayingMode;
+  }, [isPlayingMode]);
 
   useEffect(() => {
     onNoteClickRef.current = onNoteClick;
@@ -83,10 +104,10 @@ export function NoteScene({
     const previousDock = previousDockRef.current;
     const previousVolumeFill = previousVolumeFillRef.current;
 
-    previousDockRef.current = dock;
+    previousDockRef.current = effectiveDock;
     previousVolumeFillRef.current = volumeFill;
 
-    if (dock !== "top-left" || previousDock !== "top-left") {
+    if (effectiveDock !== "top-left" || previousDock !== "top-left") {
       return;
     }
 
@@ -100,11 +121,15 @@ export function NoteScene({
       direction: fillDelta > 0 ? "outbound" : "inbound",
       token: (currentWave?.token ?? 0) + 1,
     }));
-  }, [dock, volumeFill]);
+  }, [effectiveDock, volumeFill]);
 
   useEffect(() => {
     onTransitionCompleteRef.current = onTransitionComplete;
   }, [onTransitionComplete]);
+
+  useEffect(() => {
+    showLyricsRef.current = showLyrics;
+  }, [showLyrics]);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -128,7 +153,7 @@ export function NoteScene({
       container.appendChild(renderer.domElement);
 
       const scene = new THREE.Scene();
-      const camera = new THREE.PerspectiveCamera(36, 1, 0.1, 100);
+      const camera = new THREE.PerspectiveCamera(HOME_CAMERA_FOV, 1, 0.1, 100);
       camera.position.set(0, 0, 15.5);
 
       const glowTexture = createGlowTexture();
@@ -168,13 +193,24 @@ export function NoteScene({
         environmentRig.scene.add(body.envOrb);
       });
 
+      const visualizerRig = new THREE.Group();
+      visualizerRig.position.set(0, 0, 0);
+      scene.add(visualizerRig);
+
+      const visualizerAmbientLight = new THREE.AmbientLight(0x00f3ff, 0.5);
+      visualizerRig.add(visualizerAmbientLight);
+
+      const visualizerDirectionalLight = new THREE.DirectionalLight(0xffffff, 1);
+      visualizerDirectionalLight.position.set(10, 10, 5);
+      visualizerRig.add(visualizerDirectionalLight);
+
+      const visualizerPointLight = new THREE.PointLight(0x9d00ff, 2, 0, 2);
+      visualizerPointLight.position.set(-10, -10, -10);
+      visualizerRig.add(visualizerPointLight);
+
       const noteMaterial = createNoteMaterial();
       const noteRig = new THREE.Group();
       const note = createNote(noteMaterial);
-      const noteBounds = new THREE.Box3().setFromObject(note);
-      const noteSize = noteBounds.getSize(new THREE.Vector3());
-      const noteHalfWidth = noteSize.x * 0.5 * LOGO_MODE_SCALE;
-      const noteHalfHeight = noteSize.y * 0.5 * LOGO_MODE_SCALE;
       note.rotation.z = BASE_NOTE_TILT;
       noteRig.add(note);
 
@@ -193,6 +229,84 @@ export function NoteScene({
       );
       noteRig.add(noteClickTarget);
       scene.add(noteRig);
+
+      const sphereRig = new THREE.Group();
+      sphereRig.scale.setScalar(0);
+      visualizerRig.add(sphereRig);
+
+      const sphereGeometry = new THREE.IcosahedronGeometry(2.5, 3);
+      const sphereMaterial = new THREE.MeshStandardMaterial({
+        color: SPHERE_BASE_COLOR.clone(),
+        emissive: SPHERE_LIGHT_COLOR.clone(),
+        emissiveIntensity: 0.5,
+        roughness: 0.18,
+        metalness: 0.08,
+        wireframe: true,
+        transparent: true,
+        opacity: 0.82,
+        depthWrite: false,
+      });
+
+      const sphereMesh = new THREE.Mesh(sphereGeometry, sphereMaterial);
+      sphereRig.add(sphereMesh);
+
+      const sphereGlowGeometry = new THREE.IcosahedronGeometry(2.9, 2);
+      const sphereGlowMaterial = new THREE.MeshBasicMaterial({
+        color: SPHERE_LIGHT_COLOR.clone(),
+        transparent: true,
+        opacity: 0.2,
+        blending: THREE.AdditiveBlending,
+        side: THREE.BackSide,
+        depthWrite: false,
+      });
+      const sphereGlowMesh = new THREE.Mesh(sphereGlowGeometry, sphereGlowMaterial);
+      sphereRig.add(sphereGlowMesh);
+
+      const sphereAura = createGlow(
+        glowTexture,
+        SPHERE_LIGHT_COLOR.clone(),
+        0.34,
+        [0, 0, -1.6],
+        18
+      );
+      sphereRig.add(sphereAura);
+      const sphereLight = new THREE.PointLight(SPHERE_LIGHT_COLOR.clone(), 5.4, 24, 2);
+      sphereLight.position.set(0, 0, 1.8);
+      sphereRig.add(sphereLight);
+
+      const particlePositions = new Float32Array(VISUALIZER_PARTICLE_COUNT * 3);
+
+      for (let index = 0; index < VISUALIZER_PARTICLE_COUNT; index += 1) {
+        const radius = 5 + Math.random() * 25;
+        const theta = Math.random() * FULL_ROTATION;
+        const phi = Math.acos(Math.random() * 2 - 1);
+        const x = radius * Math.sin(phi) * Math.cos(theta);
+        const y = radius * Math.sin(phi) * Math.sin(theta);
+        const z = radius * Math.cos(phi);
+        const offset = index * 3;
+
+        particlePositions[offset] = x;
+        particlePositions[offset + 1] = y;
+        particlePositions[offset + 2] = z;
+      }
+
+      const particleGeometry = new THREE.BufferGeometry();
+      particleGeometry.setAttribute(
+        "position",
+        new THREE.BufferAttribute(particlePositions, 3)
+      );
+
+      const particleMaterial = new THREE.PointsMaterial({
+        size: 0.05,
+        color: VISUALIZER_PARTICLE_BASE.clone(),
+        transparent: true,
+        opacity: 0.8,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+      });
+
+      const particlePoints = new THREE.Points(particleGeometry, particleMaterial);
+      visualizerRig.add(particlePoints);
 
       const restPosition = new THREE.Vector3();
       const topRightTargetPosition = new THREE.Vector3();
@@ -283,32 +397,25 @@ export function NoteScene({
         camera.updateProjectionMatrix();
         camera.updateMatrixWorld();
         renderer.setSize(width, height, false);
-        const topRightEdgePosition = screenToWorldOnPlane(
-          camera,
-          width - NOTE_DOCK_MARGIN_X_PX,
-          NOTE_DOCK_MARGIN_Y_PX,
-          width,
-          height,
-          0
+        topRightTargetPosition.copy(
+          screenToWorldOnPlane(
+            camera,
+            width - Math.min(width * 0.055, 70),
+            Math.max(height * 0.095, 64),
+            width,
+            height,
+            0
+          )
         );
-        const topLeftEdgePosition = screenToWorldOnPlane(
-          camera,
-          NOTE_DOCK_MARGIN_X_PX,
-          NOTE_DOCK_MARGIN_Y_PX,
-          width,
-          height,
-          0
-        );
-
-        topRightTargetPosition.set(
-          topRightEdgePosition.x - noteHalfWidth,
-          topRightEdgePosition.y - noteHalfHeight,
-          0
-        );
-        topLeftTargetPosition.set(
-          topLeftEdgePosition.x + noteHalfWidth,
-          topLeftEdgePosition.y - noteHalfHeight,
-          0
+        topLeftTargetPosition.copy(
+          screenToWorldOnPlane(
+            camera,
+            Math.min(width * 0.055, 70),
+            Math.max(height * 0.095, 64),
+            width,
+            height,
+            0
+          )
         );
       };
 
@@ -544,6 +651,17 @@ export function NoteScene({
         disposeMaterial(noteClickTarget.material);
 
         scene.remove(noteRig);
+
+        sphereGeometry.dispose();
+        sphereMaterial.dispose();
+        sphereGlowGeometry.dispose();
+        sphereGlowMaterial.dispose();
+        disposeMaterial(sphereAura.material);
+        scene.remove(sphereRig);
+        particleGeometry.dispose();
+        particleMaterial.dispose();
+        scene.remove(visualizerRig);
+
         scene.remove(hemiLight);
         scene.remove(keyLight);
         scene.remove(keyLight.target);

@@ -7,8 +7,8 @@ type SubwooferSceneProps = {
   stage: "hidden" | "entering" | "visible" | "exiting";
 };
 
-const ENTER_DURATION = 0.92;
-const EXIT_DURATION = 0.74;
+const ENTER_DURATION = 0.34;
+const EXIT_DURATION = 0.24;
 
 export function SubwooferScene({ stage }: SubwooferSceneProps) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -37,7 +37,8 @@ export function SubwooferScene({ stage }: SubwooferSceneProps) {
 
     const scene = new THREE.Scene();
     const camera = new THREE.PerspectiveCamera(34, 1, 0.1, 100);
-    camera.position.set(0, 0.4, 15.8);
+    camera.position.set(0, 0.42, 21.6);
+    camera.lookAt(0, 0.28, 0);
 
     const ambient = new THREE.AmbientLight(0xaab4c8, 1.9);
     const hemi = new THREE.HemisphereLight(0xd4deef, 0x06080d, 1.35);
@@ -50,6 +51,7 @@ export function SubwooferScene({ stage }: SubwooferSceneProps) {
     scene.add(ambient, hemi, key, fill, rim);
 
     const rig = new THREE.Group();
+    rig.scale.set(0.88, 0.88, 2.64);
     scene.add(rig);
 
     const boxMaterial = new THREE.MeshPhysicalMaterial({
@@ -160,7 +162,8 @@ export function SubwooferScene({ stage }: SubwooferSceneProps) {
       new THREE.SphereGeometry(0.96, 48, 48, 0, Math.PI * 2, 0, Math.PI / 2),
       capMaterial
     );
-    dustCap.position.z = 0.38;
+    dustCap.scale.set(1, 1, 0.5);
+    dustCap.position.z = 0.14;
     speakerGroup.add(dustCap);
 
     const screwGeometry = new THREE.CylinderGeometry(0.08, 0.08, 0.12, 20);
@@ -248,7 +251,7 @@ export function SubwooferScene({ stage }: SubwooferSceneProps) {
 
       cone.position.z = -0.18 + coneTravel;
       coneInner.position.z = 0.04 + coneTravel * 0.82;
-      dustCap.position.z = 0.34 + coneTravel * 1.18;
+      dustCap.position.z = 0.14 + coneTravel * 0.34;
       speakerGroup.scale.setScalar(1 + pulse * 0.012);
 
       let motionProgress = 1;
@@ -258,18 +261,18 @@ export function SubwooferScene({ stage }: SubwooferSceneProps) {
           0,
           1
         );
-        rig.position.x = THREE.MathUtils.lerp(-9.8, 0, motionProgress);
-        rig.rotation.y = THREE.MathUtils.lerp(1.36, 0, motionProgress);
-        rig.rotation.z = THREE.MathUtils.lerp(-0.14, 0, motionProgress);
+        rig.position.x = THREE.MathUtils.lerp(-3.6, 0, motionProgress);
+        rig.rotation.y = THREE.MathUtils.lerp(0.34, 0, motionProgress);
+        rig.rotation.z = THREE.MathUtils.lerp(-0.04, 0, motionProgress);
       } else if (currentStage === "exiting") {
         motionProgress = THREE.MathUtils.smootherstep(
           Math.min(stageElapsed / EXIT_DURATION, 1),
           0,
           1
         );
-        rig.position.x = THREE.MathUtils.lerp(0, -10.8, motionProgress);
-        rig.rotation.y = THREE.MathUtils.lerp(0, -1.34, motionProgress);
-        rig.rotation.z = THREE.MathUtils.lerp(0, 0.12, motionProgress);
+        rig.position.x = THREE.MathUtils.lerp(0, -2.8, motionProgress);
+        rig.rotation.y = THREE.MathUtils.lerp(0, -0.28, motionProgress);
+        rig.rotation.z = THREE.MathUtils.lerp(0, 0.03, motionProgress);
       } else {
         rig.position.x = 0;
         rig.rotation.y = 0;
@@ -279,6 +282,7 @@ export function SubwooferScene({ stage }: SubwooferSceneProps) {
       const idleTilt = currentStage === "visible" ? Math.sin(time * 0.9) * 0.025 : 0;
       rig.rotation.x = idleTilt;
       rig.position.y = Math.sin(time * 1.18) * 0.08;
+      rig.position.z = 1.04 + pulse * 0.14;
 
       renderer.render(scene, camera);
     });
