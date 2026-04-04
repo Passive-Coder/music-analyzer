@@ -983,7 +983,7 @@ export function PlaylistWorkspace({
     clearPublishedSession();
   };
 
-  const handleBatchSongClick = () => {
+  const handleBatchSongClick = (song: PlaylistSong) => {
     // Playback on click disabled at user request.
   };
 
@@ -1328,6 +1328,14 @@ export function PlaylistWorkspace({
                             className={`playlist-song-card${
                               isEditingTarget ? " is-editing" : ""
                             }${isLiveCurrentSong ? " is-live-current" : ""}`}
+                            role="button"
+                            tabIndex={0}
+                            onClick={() => handleBatchSongClick(song)}
+                            onKeyDown={(event) =>
+                              handleSongCardKeyDown(event, () =>
+                                handleBatchSongClick(song)
+                              )
+                            }
                           >
                           <div className="playlist-song-card__order">
                             {String(index + 1).padStart(2, "0")}
