@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, type MutableRefObject } from "react";
 import * as THREE from "three";
 import type { TrackLyrics } from "@/lib/lyrics";
+import { resolvePlaybackTimeMs, type PlaybackClockSample } from "@/lib/playback-sync";
 import type { PlaylistSong } from "@/lib/playlist-types";
 
 type PulseEvent = {
@@ -12,8 +13,7 @@ type PulseEvent = {
 type VoteSongBeatParticlesProps = {
   currentSong: PlaylistSong | null;
   lyrics: TrackLyrics | null;
-  playbackTimeMs: number | null;
-  startedAt: string | null;
+  playbackSampleRef: MutableRefObject<PlaybackClockSample>;
 };
 
 type Particle = {
@@ -35,8 +35,7 @@ const PARTICLE_COUNT = 1380;
 export function VoteSongBeatParticles({
   currentSong,
   lyrics,
-  playbackTimeMs,
-  startedAt,
+  playbackSampleRef,
 }: VoteSongBeatParticlesProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const pulseEvents = useMemo(() => buildPulseEvents(lyrics), [lyrics]);
@@ -88,7 +87,10 @@ export function VoteSongBeatParticles({
       const width = window.innerWidth;
       const height = window.innerHeight;
       
-      const currentTimeMs = resolvePlaybackTimeMs(currentSong, playbackTimeMs, startedAt);
+      const currentTimeMs = resolvePlaybackTimeMs(
+        currentSong,
+        playbackSampleRef.current
+      );
       const targetPulse = getPulseStrength(pulseEvents, currentTimeMs, tempoMs);
       smoothedPulse = THREE.MathUtils.lerp(smoothedPulse, targetPulse, 0.42);
       const pulse = Math.max(targetPulse, smoothedPulse);
@@ -149,7 +151,7 @@ export function VoteSongBeatParticles({
       window.cancelAnimationFrame(frameId);
       window.removeEventListener("resize", resize);
     };
-  }, [currentSong, playbackTimeMs, pulseEvents, startedAt, tempoMs]);
+  }, [currentSong, playbackSampleRef, pulseEvents, tempoMs]);
 
   return <canvas ref={canvasRef} className="vote-song-workspace__particles" aria-hidden="true" />;
 }
@@ -194,12 +196,6 @@ function estimateTempoMs(pulseEvents: PulseEvent[], durationMs: number) {
     .sort((left, right) => left - right);
   if (intervals.length > 0) return intervals[Math.floor(intervals.length / 2)];
   return durationMs > 0 ? Math.max(400, Math.min(720, durationMs / 320)) : FALLBACK_TEMPO_MS;
-}
-
-function resolvePlaybackTimeMs(currentSong: PlaylistSong | null, playbackTimeMs: number | null, startedAt: string | null) {
-  if (typeof playbackTimeMs === "number") return playbackTimeMs;
-  if (!currentSong || !startedAt) return 0;
-  return Math.max(0, Math.min(Date.now() - Date.parse(startedAt), currentSong.durationMs));
 }
 
 function getPulseStrength(pulseEvents: PulseEvent[], currentTimeMs: number, tempoMs: number) {

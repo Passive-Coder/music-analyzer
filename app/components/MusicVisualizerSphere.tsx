@@ -1,9 +1,10 @@
 "use client";
 
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, type MutableRefObject } from "react";
 import * as THREE from "three";
 
 import type { TrackLyrics } from "@/lib/lyrics";
+import { resolvePlaybackTimeMs, type PlaybackClockSample } from "@/lib/playback-sync";
 import type { ActivePlaylistSongVote, PlaylistSong } from "@/lib/playlist-types";
 
 const WIREFRAME_COLOR = new THREE.Color(0xf1dcff);
@@ -20,18 +21,16 @@ type PulseEvent = {
 export function MusicVisualizerSphere({
   currentSong,
   lyrics,
-  playbackTimeMs,
+  playbackSampleRef,
   songList,
-  startedAt,
 }: {
   currentSong: PlaylistSong | null;
   lyrics: TrackLyrics | null;
-  playbackTimeMs?: number | null;
+  playbackSampleRef: MutableRefObject<PlaybackClockSample>;
   songList: ActivePlaylistSongVote[];
-  startedAt: string | null;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
-  const roomTimeRef = useRef(0);
+  const currentSongRef = useRef<PlaylistSong | null>(currentSong);
   const pulseEventsRef = useRef<PulseEvent[]>([]);
   const pulseEvents = useMemo(() => buildPulseEvents(lyrics), [lyrics]);
   const tempoMs = useMemo(
@@ -57,33 +56,8 @@ export function MusicVisualizerSphere({
   }, [pulseEvents]);
 
   useEffect(() => {
-    if (!currentSong || !startedAt) {
-      roomTimeRef.current = 0;
-      return;
-    }
-
-    let frameId = 0;
-    const startedAtMs = Date.parse(startedAt);
-    const durationMs = Math.max(currentSong.durationMs, 0);
-
-    const tick = () => {
-      const elapsedMs =
-        typeof playbackTimeMs === "number"
-          ? playbackTimeMs
-          : Number.isFinite(startedAtMs)
-            ? Date.now() - startedAtMs
-            : 0;
-      roomTimeRef.current = Math.max(0, Math.min(elapsedMs, durationMs));
-      frameId = window.requestAnimationFrame(tick);
-    };
-
-    frameId = window.requestAnimationFrame(tick);
-
-    return () => {
-      window.cancelAnimationFrame(frameId);
-    };
-  }, [currentSong, playbackTimeMs, startedAt]);
-
+    currentSongRef.current = currentSong;
+  }, [currentSong]);
   useEffect(() => {
     const container = containerRef.current;
 
@@ -176,20 +150,34 @@ export function MusicVisualizerSphere({
     window.addEventListener("resize", resize);
 
     const clock = new THREE.Clock();
-    let smoothedPulse = 0;
 
     renderer.setAnimationLoop(() => {
       const elapsed = clock.getElapsedTime();
-      const currentTimeMs = roomTimeRef.current;
-      const targetPulse = getPulseStrength(
-        pulseEventsRef.current,
-        currentTimeMs,
-        tempoMs,
-        beatAnchorMs
+      const currentSongDurationMs = Math.max(
+        currentSongRef.current?.durationMs ?? 0,
+        0
       );
-      smoothedPulse = THREE.MathUtils.lerp(smoothedPulse, targetPulse, 0.3);
-      const pulse = Math.max(targetPulse, smoothedPulse);
-      const scale = 1 + pulse * 0.2 + roomEnergy * 0.04;
+      const playbackSample = playbackSampleRef.current;
+      const isActivePlayback =
+        playbackSample.songId === currentSongRef.current?.id &&
+        playbackSample.isPlaying;
+      const currentTimeMs = resolvePlaybackTimeMs(
+        currentSongRef.current,
+        playbackSample
+      );
+      const isPastVisualCutoff =
+        currentSongDurationMs > 0 &&
+        currentTimeMs >= Math.max(currentSongDurationMs - 160, 0);
+      const pulse = isActivePlayback
+        && !isPastVisualCutoff
+        ? getPulseStrength(
+            pulseEventsRef.current,
+            currentTimeMs,
+            tempoMs,
+            beatAnchorMs
+          )
+        : 0;
+      const scale = 1 + pulse * 0.2 + roomEnergy * (isActivePlayback ? 0.04 : 0.016);
 
       sphereRig.rotation.y += 0.002 + pulse * 0.0045;
       sphereRig.rotation.x = Math.sin(elapsed * 0.32) * 0.08;
@@ -237,7 +225,7 @@ export function MusicVisualizerSphere({
         container.removeChild(renderer.domElement);
       }
     };
-  }, [beatAnchorMs, roomEnergy, tempoMs]);
+  }, [beatAnchorMs, playbackSampleRef, roomEnergy, tempoMs]);
 
   return (
     <div className="vote-song-visualizer" aria-hidden="true">

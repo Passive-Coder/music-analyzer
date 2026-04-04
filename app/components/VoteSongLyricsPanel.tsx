@@ -12,6 +12,7 @@ type VoteSongLyricsPanelProps = {
   currentTimeMs: number;
   lyrics: TrackLyrics | null;
   onBackToPlayer: () => void;
+  plainLyrics: string | null;
   songTitle: string;
   status: "idle" | "loading" | "ready" | "missing" | "error";
 };
@@ -21,6 +22,7 @@ export function VoteSongLyricsPanel({
   currentTimeMs,
   lyrics,
   onBackToPlayer,
+  plainLyrics,
   songTitle,
   status,
 }: VoteSongLyricsPanelProps) {
@@ -39,6 +41,14 @@ export function VoteSongLyricsPanel({
     const startIndex = activeIndex >= 0 ? activeIndex : 0;
     return allLines.slice(startIndex, startIndex + 5);
   }, [activeIndex, lyrics]);
+  const plainLyricLines = useMemo(
+    () =>
+      (plainLyrics ?? "")
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter(Boolean),
+    [plainLyrics]
+  );
 
   return (
     <div className="vote-song-player__lyrics-screen">
@@ -91,6 +101,14 @@ export function VoteSongLyricsPanel({
                 </div>
               );
             })}
+          </div>
+        ) : plainLyricLines.length > 0 ? (
+          <div className="vote-song-player__lyrics-lines vote-song-player__lyrics-lines--plain">
+            {plainLyricLines.map((line, index) => (
+              <div key={`${songTitle}-${index}`} className="vote-song-player__lyrics-line is-active">
+                {line}
+              </div>
+            ))}
           </div>
         ) : (
           <p className="vote-song-player__lyrics-empty">

@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import path from "node:path";
 import { promisify } from "node:util";
 
 import { parseSyncedLyrics, type TrackLyrics } from "@/lib/lyrics";
@@ -77,7 +78,7 @@ export async function GET(request: Request) {
       return Response.json(payload);
     }
 
-    const ytmusicResult = await withTimeout(videoId ? 14_000 : 26_000, ytmusicPromise);
+    const ytmusicResult = await withTimeout(videoId ? 10_000 : 14_000, ytmusicPromise);
 
     if (ytmusicResult?.trackLyrics?.lines.length) {
       const payload = {
@@ -146,7 +147,7 @@ async function getYouTubeMusicLyrics({
   title: string;
   videoId: string;
 }) {
-  const scriptPath = process.cwd() + "\\scripts\\ytmusic_lyrics.py";
+  const scriptPath = path.join(process.cwd(), "scripts", "ytmusic_lyrics.py");
   const { stdout } = await execFileAsync(
     PYTHON_EXECUTABLE,
     [
@@ -227,8 +228,12 @@ async function getLyricsMatch({
     q: `${title} ${artist}`.trim(),
     track_name: title,
   });
+  const broadSearch = await fetchLrcLibRecordArray("search", {
+    q: title.trim(),
+    track_name: title,
+  });
 
-  return search
+  return [...search, ...broadSearch]
     .filter((entry) => entry.syncedLyrics)
     .sort((left, right) =>
       scoreLyricsMatch(right, { album, artist, duration, title }) -

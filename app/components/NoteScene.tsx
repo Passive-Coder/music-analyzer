@@ -11,6 +11,8 @@ const BASE_NOTE_TILT = -Math.PI / 12;
 const LOGO_MODE_SCALE = 0.28;
 const LOGO_TRANSITION_DURATION = 1.25;
 const FULL_ROTATION = Math.PI * 2;
+const NOTE_DOCK_MARGIN_X_PX = 9;
+const NOTE_DOCK_MARGIN_Y_PX = 9;
 const PUBLISH_RAINBOW_DURATION = 0.5;
 const PUBLISH_EFFECT_DURATION = 0.96;
 const HOME_NOTE_COLOR = new THREE.Color(0xc8dbff);
@@ -169,6 +171,10 @@ export function NoteScene({
       const noteMaterial = createNoteMaterial();
       const noteRig = new THREE.Group();
       const note = createNote(noteMaterial);
+      const noteBounds = new THREE.Box3().setFromObject(note);
+      const noteSize = noteBounds.getSize(new THREE.Vector3());
+      const noteHalfWidth = noteSize.x * 0.5 * LOGO_MODE_SCALE;
+      const noteHalfHeight = noteSize.y * 0.5 * LOGO_MODE_SCALE;
       note.rotation.z = BASE_NOTE_TILT;
       noteRig.add(note);
 
@@ -277,25 +283,32 @@ export function NoteScene({
         camera.updateProjectionMatrix();
         camera.updateMatrixWorld();
         renderer.setSize(width, height, false);
-        topRightTargetPosition.copy(
-          screenToWorldOnPlane(
-            camera,
-            width - Math.min(width * 0.1, 140),
-            Math.max(height * 0.095, 64),
-            width,
-            height,
-            0
-          )
+        const topRightEdgePosition = screenToWorldOnPlane(
+          camera,
+          width - NOTE_DOCK_MARGIN_X_PX,
+          NOTE_DOCK_MARGIN_Y_PX,
+          width,
+          height,
+          0
         );
-        topLeftTargetPosition.copy(
-          screenToWorldOnPlane(
-            camera,
-            Math.min(width * 0.1, 132),
-            Math.max(height * 0.1, 68),
-            width,
-            height,
-            0
-          )
+        const topLeftEdgePosition = screenToWorldOnPlane(
+          camera,
+          NOTE_DOCK_MARGIN_X_PX,
+          NOTE_DOCK_MARGIN_Y_PX,
+          width,
+          height,
+          0
+        );
+
+        topRightTargetPosition.set(
+          topRightEdgePosition.x - noteHalfWidth,
+          topRightEdgePosition.y - noteHalfHeight,
+          0
+        );
+        topLeftTargetPosition.set(
+          topLeftEdgePosition.x + noteHalfWidth,
+          topLeftEdgePosition.y - noteHalfHeight,
+          0
         );
       };
 

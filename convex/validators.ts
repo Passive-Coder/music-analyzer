@@ -31,6 +31,11 @@ export const activePlaylistSongVoteValidator = v.object({
   vote: v.number(),
 });
 
+export const previousPlaylistResultsValidator = v.object({
+  batch: v.array(playlistSongValidator),
+  songList: v.array(activePlaylistSongVoteValidator),
+});
+
 export const activePlaylistVoterSelectionValidator = v.object({
   viewerId: v.string(),
   songId: v.string(),

@@ -14,28 +14,32 @@ type GoogleCredentialResponse = {
   credential?: string;
 };
 
-type GoogleAccountsId = {
-  initialize: (options: {
-    callback: (response: GoogleCredentialResponse) => void;
-    client_id: string;
+type GoogleTokenResponse = {
+  access_token?: string;
+  error?: string;
+  error_description?: string;
+};
+
+type GoogleTokenClient = {
+  requestAccessToken: (overrides?: {
+    prompt?: string;
   }) => void;
-  renderButton: (
-    element: HTMLElement,
-    options: {
-      shape?: "pill" | "rectangular";
-      size?: "large" | "medium" | "small";
-      text?: "signin_with" | "continue_with";
-      theme?: "outline" | "filled_blue" | "filled_black";
-      width?: number;
-    }
-  ) => void;
+};
+
+type GoogleAccountsOauth2 = {
+  initTokenClient: (options: {
+    callback: (response: GoogleTokenResponse) => void;
+    client_id: string;
+    error_callback?: () => void;
+    scope: string;
+  }) => GoogleTokenClient;
 };
 
 declare global {
   interface Window {
     google?: {
       accounts: {
-        id: GoogleAccountsId;
+        oauth2: GoogleAccountsOauth2;
       };
     };
   }
@@ -45,7 +49,7 @@ export function GoogleSignInPanel({
   mode,
   onSignedIn,
 }: GoogleSignInPanelProps) {
-  const overlayRef = useRef<HTMLDivElement>(null);
+  const tokenClientRef = useRef<GoogleTokenClient | null>(null);
   const [scriptReady, setScriptReady] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -76,8 +80,28 @@ export function GoogleSignInPanel({
     [onSignedIn]
   );
 
+  const handleTokenResponse = useCallback(
+    async (response: GoogleTokenResponse) => {
+      const accessToken = response.access_token;
+
+      if (response.error || !accessToken) {
+        setError(
+          response.error_description ??
+            (response.error === "access_denied"
+              ? "Google sign-in was cancelled."
+              : "Google did not return a sign-in credential.")
+        );
+        setIsSubmitting(false);
+        return;
+      }
+
+      await handleCredential({ credential: accessToken });
+    },
+    [handleCredential]
+  );
+
   useEffect(() => {
-    if (window.google?.accounts.id) {
+    if (window.google?.accounts.oauth2) {
       setScriptReady(true);
       return;
     }
@@ -119,41 +143,65 @@ export function GoogleSignInPanel({
   }, []);
 
   useEffect(() => {
-    if (!scriptReady || !overlayRef.current || !window.google?.accounts.id) {
+    if (!scriptReady || !window.google?.accounts.oauth2) {
       return;
     }
 
-    window.google.accounts.id.initialize({
-      callback: handleCredential,
+    tokenClientRef.current = window.google.accounts.oauth2.initTokenClient({
+      callback: handleTokenResponse,
       client_id: GOOGLE_CLIENT_ID,
+      error_callback: () => {
+        setError("Google sign-in was cancelled.");
+        setIsSubmitting(false);
+      },
+      scope: "openid email profile",
     });
+  }, [handleTokenResponse, scriptReady]);
 
-    overlayRef.current.innerHTML = "";
-    window.google.accounts.id.renderButton(overlayRef.current, {
-      shape: "pill",
-      size: "large",
-      text: "signin_with",
-      theme: "outline",
-      width: 320,
-    });
-  }, [handleCredential, scriptReady]);
+  const handleSignInClick = useCallback(() => {
+    if (!scriptReady || isSubmitting) {
+      return;
+    }
+
+    const tokenClient = tokenClientRef.current;
+
+    if (!tokenClient) {
+      setError("Google sign-in could not be loaded.");
+      return;
+    }
+
+    setError(null);
+    setIsSubmitting(true);
+    tokenClient.requestAccessToken({ prompt: "select_account" });
+  }, [isSubmitting, scriptReady]);
 
   return (
     <div className="playlist-workspace__auth-card">
-      <p className="playlist-workspace__songs-eyebrow">Google Sign-In</p>
-      <h3 className="playlist-workspace__songs-title">
-        {mode === "publish" ? "Sign In To Publish Playlists" : "Sign In To Vote"}
-      </h3>
-      <p className="playlist-workspace__copy">
-        {mode === "publish"
-          ? "Sign in with Google before loading, editing, and publishing a playlist."
-          : "Sign in with Google before opening the song voting screen."}
-      </p>
       <div className="playlist-workspace__auth-button-container">
-        <div
-          ref={overlayRef}
-          className="google-signin-button-host"
-        />
+        <button
+          type="button"
+          className="playlist-workspace__google-shell"
+          onClick={handleSignInClick}
+          disabled={!scriptReady || isSubmitting}
+        >
+          <span className="playlist-workspace__google-shell-orbit playlist-workspace__google-shell-orbit--blue" />
+          <span className="playlist-workspace__google-shell-orbit playlist-workspace__google-shell-orbit--red" />
+          <span className="playlist-workspace__google-shell-orbit playlist-workspace__google-shell-orbit--yellow" />
+          <span className="playlist-workspace__google-shell-orbit playlist-workspace__google-shell-orbit--green" />
+          <span className="playlist-workspace__google-shell-logo">
+            <GoogleLogo />
+          </span>
+          <span className="playlist-workspace__google-shell-copy">
+            <strong>
+              {isSubmitting ? "Signing You In..." : "Continue With Google"}
+            </strong>
+            <span>
+              {mode === "publish"
+                ? "Use your Google account to publish this playlist."
+                : "Use your Google account to enter the vote room."}
+            </span>
+          </span>
+        </button>
       </div>
 
       {!scriptReady ? (
@@ -177,15 +225,15 @@ function GoogleLogo() {
       viewBox="0 0 24 24"
       xmlns="http://www.w3.org/2000/svg"
       aria-hidden="true"
-      width="20"
-      height="20"
+      width="45"
+      height="45"
       style={{
         display: "block",
         flex: "0 0 auto",
-        height: "20px",
-        minHeight: "20px",
-        minWidth: "20px",
-        width: "20px",
+        height: "45px",
+        minHeight: "45px",
+        minWidth: "45px",
+        width: "45px",
       }}
     >
       <path

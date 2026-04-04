@@ -34,6 +34,9 @@ type ViewState =
 
 export default function Home() {
   const [viewState, setViewState] = useState<ViewState>("home");
+  const [workspaceMode, setWorkspaceMode] = useState<"publish" | "vote">(
+    "publish"
+  );
   const [publishEffectToken, setPublishEffectToken] = useState(0);
   const [isPublishImpactActive, setIsPublishImpactActive] = useState(false);
   const [voteVolumeLevel, setVoteVolumeLevel] = useState(72);
@@ -59,6 +62,12 @@ export default function Home() {
     viewState === "vote" ||
     viewState === "toPublish" ||
     viewState === "toVote";
+  const activeWorkspaceMode =
+    viewState === "toVote" || viewState === "vote"
+      ? "vote"
+      : viewState === "toPublish" || viewState === "publish"
+        ? "publish"
+        : workspaceMode;
   const isPlaylistThemeActive =
     viewState !== "home" && viewState !== "choice";
   const isPlaylistTransitionActive =
@@ -118,11 +127,13 @@ export default function Home() {
         isActive={isChoiceActive}
         onChooseSong={() => {
           if (viewState === "choice") {
+            setWorkspaceMode("vote");
             setViewState("toVote");
           }
         }}
         onPublishPlaylist={() => {
           if (viewState === "choice") {
+            setWorkspaceMode("publish");
             setViewState("toPublish");
           }
         }}
@@ -139,11 +150,13 @@ export default function Home() {
         }}
         onTransitionComplete={(dock) => {
           if (dock === "top-right") {
+            setWorkspaceMode("publish");
             setViewState("publish");
             return;
           }
 
           if (dock === "top-left") {
+            setWorkspaceMode("vote");
             setViewState("vote");
             return;
           }
@@ -165,10 +178,9 @@ export default function Home() {
       ) : null}
       <PlaylistWorkspace
         isVisible={isPlaylistWorkspaceVisible}
-        mode={viewState === "vote" ? "vote" : "publish"}
+        mode={activeWorkspaceMode}
         onPublish={() => {
           triggerPublishEffect();
-          setViewState("toVote");
         }}
         onVoteVolumeChange={setVoteVolumeLevel}
         voteVolumeLevel={voteVolumeLevel}

@@ -29,6 +29,11 @@ export type ActivePlaylistSongVote = {
   vote: number;
 };
 
+export type PreviousPlaylistResults = {
+  batch: PlaylistSong[];
+  songList: ActivePlaylistSongVote[];
+};
+
 export type ActivePlaylistViewerSelection = {
   selectedSongId: string | null;
 };
@@ -40,6 +45,7 @@ export type ActivePlaylistState = {
   currentSong: PlaylistSong | null;
   currentSongId: string | null;
   currentSongStartedAt: string | null;
+  previousResults: PreviousPlaylistResults | null;
   playedSongs: PlaylistSong[];
   songList: ActivePlaylistSongVote[];
   updatedAt: string;

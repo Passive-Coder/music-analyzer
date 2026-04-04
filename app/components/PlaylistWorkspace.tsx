@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  startTransition,
   useEffect,
   useMemo,
   useRef,
@@ -148,6 +149,7 @@ export function PlaylistWorkspace({
   onVoteVolumeChange,
   voteVolumeLevel = 72,
 }: PlaylistWorkspaceProps) {
+  const hasLoadedPublishAuthRef = useRef(false);
   const [hasMounted, setHasMounted] = useState(false);
   const [playlistUrl, setPlaylistUrl] = useState("");
   const [authState, setAuthState] = useState<AuthState>("loading");
@@ -182,6 +184,7 @@ export function PlaylistWorkspace({
     string | null
   >(null);
   const [playbackSong, setPlaybackSong] = useState<PlaylistSong | null>(null);
+  const [playbackStartSeconds, setPlaybackStartSeconds] = useState(0);
   const [playbackToken, setPlaybackToken] = useState(0);
   const convexClient = useMemo(() => getConvexBrowserClient(), []);
 
@@ -222,14 +225,17 @@ export function PlaylistWorkspace({
     : editingTarget !== null
       ? "batch"
       : null;
-  const playbackEmbedUrl = getSongEmbedUrl(playbackSong, playbackToken);
+  const playbackEmbedUrl =
+    isVisible && !isVoteMode
+      ? getSongEmbedUrl(playbackSong, playbackToken, playbackStartSeconds)
+      : null;
   const busy = requestState !== "idle" || mutationState !== "idle";
   useEffect(() => {
     setHasMounted(true);
   }, []);
 
   useEffect(() => {
-    if (!hasMounted || !isVisible) {
+    if (!hasMounted || !isVisible || isVoteMode || hasLoadedPublishAuthRef.current) {
       return;
     }
 
@@ -243,6 +249,8 @@ export function PlaylistWorkspace({
       if (isCancelled) {
         return;
       }
+
+      hasLoadedPublishAuthRef.current = true;
 
       if (!result.ok) {
         setAuthSession(null);
@@ -260,7 +268,7 @@ export function PlaylistWorkspace({
     return () => {
       isCancelled = true;
     };
-  }, [hasMounted, isVisible]);
+  }, [hasMounted, isVisible, isVoteMode]);
 
   useEffect(() => {
     if (
@@ -537,6 +545,32 @@ export function PlaylistWorkspace({
     isCreator,
     isVisible,
     publishedCode,
+    publishedCurrentSong,
+    publishedCurrentSongStartedAt,
+  ]);
+
+  useEffect(() => {
+    if (isVoteMode || !isVisible || !publishedCurrentSong || !publishedCurrentSongStartedAt) {
+      startTransition(() => {
+        setPlaybackSong(null);
+        setPlaybackStartSeconds(0);
+      });
+      return;
+    }
+
+    const startedAtMs = Date.parse(publishedCurrentSongStartedAt);
+    const nextStartSeconds = Number.isFinite(startedAtMs)
+      ? Math.max(Math.floor((Date.now() - startedAtMs) / 1000), 0)
+      : 0;
+
+    startTransition(() => {
+      setPlaybackSong(publishedCurrentSong);
+      setPlaybackStartSeconds(nextStartSeconds);
+      setPlaybackToken(Date.now());
+    });
+  }, [
+    isVisible,
+    isVoteMode,
     publishedCurrentSong,
     publishedCurrentSongStartedAt,
   ]);
@@ -1015,6 +1049,7 @@ export function PlaylistWorkspace({
       {isVoteMode ? (
         <VoteSongWorkspace
           defaultCode={publishedCode}
+          isVisible={isVisible}
           onVolumeChange={onVoteVolumeChange}
           volumeLevel={voteVolumeLevel}
         />
@@ -1069,6 +1104,7 @@ export function PlaylistWorkspace({
                     </span>
                   </button>
                 </div>
+                <div style={{display: 'flex', flexDirection: 'row', gap: 15}}>
                 <input
                   id="playlist-url-input"
                   className="playlist-workspace__input"
@@ -1077,8 +1113,7 @@ export function PlaylistWorkspace({
                   onChange={(event) => setPlaylistUrl(event.target.value)}
                   placeholder="https://music.youtube.com/playlist?list=..."
                 />
-              </div>
-              <button
+                <button
                 type="button"
                 className="playlist-workspace__primary"
                 onClick={handleLoadPlaylist}
@@ -1086,6 +1121,8 @@ export function PlaylistWorkspace({
               >
                 {requestState === "loading" ? "Loading..." : "Load Playlist"}
               </button>
+              </div>
+              </div>
             </div>
           ) : null}
 
@@ -1182,9 +1219,8 @@ export function PlaylistWorkspace({
           <div className="playlist-workspace__batch-pane">
             <div className="playlist-workspace__songs-header">
               <div>
-                <p className="playlist-workspace__songs-eyebrow">Batches</p>
                 <h3 className="playlist-workspace__songs-title playlist-workspace__songs-title--compact">
-                  {isVoteMode ? "Vote For The Next Song" : "Ordered Groups Of 5"}
+                  {isVoteMode ? "Vote For The Next Song" : "Batches"}
                 </h3>
               </div>
               <div className="playlist-workspace__batch-nav">
@@ -1393,9 +1429,6 @@ export function PlaylistWorkspace({
             <div className="playlist-workspace__loaded-shell">
               <div className="playlist-workspace__songs-header playlist-workspace__songs-header--tight">
                 <div>
-                  <p className="playlist-workspace__songs-eyebrow">
-                    Loaded Playlists
-                  </p>
                   <h3 className="playlist-workspace__songs-title playlist-workspace__songs-title--compact">
                     Added Sources
                   </h3>
@@ -1503,22 +1536,11 @@ export function PlaylistWorkspace({
 
           <div className="playlist-workspace__songs-header">
             <div>
-              <p className="playlist-workspace__songs-eyebrow">Songs</p>
               <h3 className="playlist-workspace__songs-title">
                 {isVoteMode ? "Song Library" : "Full Song List"}
               </h3>
             </div>
             <div className="playlist-workspace__songs-side">
-              {!isVoteMode ? (
-                <button
-                  type="button"
-                  className="playlist-workspace__secondary"
-                  onClick={shuffleSongs}
-                  disabled={!hasSongs || isPublished || busy}
-                >
-                  Random Shuffle
-                </button>
-              ) : null}
               <p className="playlist-workspace__songs-count">
                 {hasSongs
                   ? `${filteredSongEntries.length} of ${songs.length} shown`
@@ -1554,7 +1576,6 @@ export function PlaylistWorkspace({
           {!isVoteMode ? (
             <div className="playlist-workspace__search-row">
               <label className="playlist-workspace__field playlist-workspace__field--search">
-                <span className="playlist-workspace__label">Search Songs</span>
                 <input
                   className="playlist-workspace__input"
                   type="search"
@@ -1572,6 +1593,16 @@ export function PlaylistWorkspace({
               >
                 Create Batches
               </button>
+              {!isVoteMode ? (
+                <button
+                  type="button"
+                  className="playlist-workspace__secondary"
+                  onClick={shuffleSongs}
+                  disabled={!hasSongs || isPublished || busy}
+                >
+                  Random Shuffle
+                </button>
+              ) : null}
             </div>
           ) : null}
 
@@ -1801,7 +1832,11 @@ function getSongPlaybackUrl(song: PlaylistSong) {
   return `https://music.youtube.com/search?q=${searchQuery}`;
 }
 
-function getSongEmbedUrl(song: PlaylistSong | null, playbackToken: number) {
+function getSongEmbedUrl(
+  song: PlaylistSong | null,
+  playbackToken: number,
+  startSeconds = 0
+) {
   if (!song) {
     return null;
   }
@@ -1812,7 +1847,9 @@ function getSongEmbedUrl(song: PlaylistSong | null, playbackToken: number) {
     return null;
   }
 
-  return `https://www.youtube.com/embed/${videoId}?autoplay=1&playsinline=1&rel=0&modestbranding=1&octavePlayback=${playbackToken}`;
+  const normalizedStartSeconds = Math.max(Math.floor(startSeconds), 0);
+
+  return `https://www.youtube.com/embed/${videoId}?autoplay=1&playsinline=1&rel=0&modestbranding=1&start=${normalizedStartSeconds}&octavePlayback=${playbackToken}`;
 }
 
 function getSongVideoId(song: PlaylistSong) {
