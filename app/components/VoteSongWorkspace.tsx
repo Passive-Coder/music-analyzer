@@ -68,6 +68,9 @@ export function VoteSongWorkspace({
   onVolumeChange,
   volumeLevel = 72,
 }: VoteSongWorkspaceProps) {
+  const [isCompactVoteLayout, setIsCompactVoteLayout] = useState(false);
+  const [isPhoneVoteLayout, setIsPhoneVoteLayout] = useState(false);
+  const [isMobileCurrentSongVisible, setIsMobileCurrentSongVisible] = useState(false);
   const convexClient = useMemo(() => getConvexBrowserClient(), []);
   const [joinState, setJoinState] = useState<JoinState>("idle");
   const [voteState, setVoteState] = useState<VoteMutationState>("idle");
@@ -163,6 +166,11 @@ export function VoteSongWorkspace({
   const selectedTimelineSong =
     timelineSongs.find((entry) => entry.song.id === selectedTimelineSongId)?.song ??
     null;
+  const hasJoinedRoom = activeCode !== null && activeState !== null;
+  const hasEndedSession = previousResult !== null && !hasJoinedRoom;
+  const isResultsVisible = resultsViewStage !== "hidden";
+  const isPhoneCurrentSongVisible =
+    isPhoneVoteLayout && hasJoinedRoom && !isResultsVisible && isMobileCurrentSongVisible;
   const handleSessionEnded = useCallback(
     (message: string) => {
       if (activeState?.currentBatch.length) {
@@ -179,6 +187,7 @@ export function VoteSongWorkspace({
       setActiveState(null);
       setSelectedSongId(null);
       setSelectedTimelineSongId(null);
+      setIsMobileCurrentSongVisible(false);
       setError(message);
     },
     [activeCode, activeState]
@@ -290,6 +299,32 @@ export function VoteSongWorkspace({
       songList: activeState.songList.map((entry) => ({ ...entry })),
     };
   }, [activeCode, activeState]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return undefined;
+    }
+
+    const compactQuery = window.matchMedia("(max-width: 1000px)");
+    const phoneQuery = window.matchMedia("(max-width: 620px)");
+    const syncResponsiveLayout = () => {
+      setIsCompactVoteLayout(compactQuery.matches);
+      setIsPhoneVoteLayout(phoneQuery.matches);
+
+      if (!phoneQuery.matches) {
+        setIsMobileCurrentSongVisible(false);
+      }
+    };
+
+    syncResponsiveLayout();
+    compactQuery.addEventListener("change", syncResponsiveLayout);
+    phoneQuery.addEventListener("change", syncResponsiveLayout);
+
+    return () => {
+      compactQuery.removeEventListener("change", syncResponsiveLayout);
+      phoneQuery.removeEventListener("change", syncResponsiveLayout);
+    };
+  }, []);
 
   useEffect(() => {
     if (!activeCode || !viewerId || !activeState?.currentSongStartedAt) {
@@ -614,9 +649,6 @@ export function VoteSongWorkspace({
     setSelectedSongId(result.result.selectedSongId);
   };
 
-  const hasJoinedRoom = activeCode !== null && activeState !== null;
-  const hasEndedSession = previousResult !== null && !hasJoinedRoom;
-  const isResultsVisible = resultsViewStage !== "hidden";
   const liveResultsSource =
     activeState?.previousResults ?? localPreviousResults ?? null;
   const liveResultsSnapshot = liveResultsSource
@@ -628,6 +660,8 @@ export function VoteSongWorkspace({
     : null;
   const resultsSnapshot = liveResultsSnapshot ?? previousResult;
   const toggleResultsView = () => {
+    setIsMobileCurrentSongVisible(false);
+
     if (resultsViewTimeoutRef.current !== null) {
       window.clearTimeout(resultsViewTimeoutRef.current);
       resultsViewTimeoutRef.current = null;
@@ -658,6 +692,191 @@ export function VoteSongWorkspace({
 
     setResultsViewStage("hidden");
   };
+  const voteOptionsPanel = activeState ? (
+    <div className="vote-song-workspace__left">
+      <div className="vote-song-workspace__section-header">
+        <h3 className="playlist-workspace__songs-title playlist-workspace__songs-title--compact vote-song-workspace__section-title">
+          Voting Options
+        </h3>
+        <div className="vote-song-workspace__header-actions">
+          <button
+            type="button"
+            className="playlist-workspace__secondary vote-song-workspace__previous-button"
+            onClick={() => {
+              toggleResultsView();
+            }}
+          >
+            {isResultsVisible ? "Back To Voting" : "Show Results"}
+          </button>
+          <span className="playlist-workspace__pill vote-song-workspace__header-pill">
+            One vote only
+          </span>
+        </div>
+        <span className="playlist-workspace__songs-count vote-song-workspace__header-caption">
+          Change anytime before the song ends
+        </span>
+      </div>
+      <div className="vote-song-workspace__card vote-song-workspace__card--vote">
+        {error ? <p className="playlist-workspace__error">{error}</p> : null}
+
+        {isResultsVisible ? (
+          resultsSnapshot ? (
+            <VoteSubwooferPanel
+              currentSongId={activeState.currentSongId}
+              selectedSongId={selectedSongId}
+              songList={resultsSnapshot.songList}
+              songs={resultsSnapshot.batch}
+              stage={resultsViewStage}
+              topSongIds={resultsSnapshot.topSongIds}
+            />
+          ) : (
+            <div className="vote-song-workspace__ended-copy">
+              <strong>Results pending</strong>
+              <span>
+                The first completed voting batch has not locked in yet.
+              </span>
+            </div>
+          )
+        ) : (
+          <div className="vote-song-workspace__piano-shell">
+            <div className="vote-song-workspace__piano-viewport">
+              <div className="vote-song-workspace__piano">
+                {WHITE_PIANO_KEYS.map((keyLabel, index) => {
+                  const song = activeState.currentBatch[index] ?? null;
+                  const isCurrentSong = song
+                    ? activeState.currentSongId === song.id
+                    : false;
+                  const isSelected = song ? selectedSongId === song.id : false;
+                  const isPressing = song ? pressedKeyId === song.id : false;
+                  const canVote = !!song;
+
+                  return (
+                    <button
+                      key={`white-${keyLabel}`}
+                      type="button"
+                      className={`vote-song-workspace__piano-white-key${
+                        isSelected ? " is-selected" : ""
+                      }${isCurrentSong ? " is-current" : ""}${
+                        isPressing ? " is-pressing" : ""
+                      }`}
+                      onPointerDown={() => {
+                        if (song && canVote && voteState === "idle") {
+                          setPressedKeyId(song.id);
+                        }
+                      }}
+                      onPointerUp={() => {
+                        setPressedKeyId((currentValue) =>
+                          currentValue === song?.id ? null : currentValue
+                        );
+                      }}
+                      onPointerLeave={() => {
+                        setPressedKeyId((currentValue) =>
+                          currentValue === song?.id ? null : currentValue
+                        );
+                      }}
+                      onPointerCancel={() => {
+                        setPressedKeyId((currentValue) =>
+                          currentValue === song?.id ? null : currentValue
+                        );
+                      }}
+                      onClick={() => {
+                        if (song && canVote) {
+                          void handleVoteForSong(song.id);
+                        }
+                      }}
+                      disabled={!canVote || voteState !== "idle"}
+                    >
+                      <div className="vote-song-workspace__piano-key-content">
+                        <span className="vote-song-workspace__piano-key-art-shell">
+                          {song?.artworkUrl ? (
+                            <img
+                              src={song.artworkUrl}
+                              alt={song.title}
+                              className="vote-song-workspace__piano-key-art"
+                            />
+                          ) : (
+                            <span
+                              className="vote-song-workspace__piano-key-art vote-song-workspace__piano-key-art--fallback"
+                              aria-hidden="true"
+                            >
+                              {(song?.title ?? "Empty").charAt(0).toUpperCase()}
+                            </span>
+                          )}
+                        </span>
+                        <span className="vote-song-workspace__piano-key-copy">
+                          <strong>
+                            <MarqueeText
+                              align="center"
+                              overflowStrategy="length"
+                              text={song?.title ?? "Empty"}
+                            />
+                          </strong>
+                        </span>
+                      </div>
+                    </button>
+                  );
+                })}
+
+                {BLACK_PIANO_KEYS.map((key) => (
+                  <div
+                    key={`black-${key.label}`}
+                    className={`vote-song-workspace__piano-black-key vote-song-workspace__piano-black-key--after-${key.afterIndex}${
+                      pressedBlackKeyId === key.label ? " is-pressing" : ""
+                    }`}
+                    onPointerDown={() => {
+                      setPressedBlackKeyId(key.label);
+                    }}
+                    onPointerUp={() => {
+                      setPressedBlackKeyId((currentValue) =>
+                        currentValue === key.label ? null : currentValue
+                      );
+                    }}
+                    onPointerLeave={() => {
+                      setPressedBlackKeyId((currentValue) =>
+                        currentValue === key.label ? null : currentValue
+                      );
+                    }}
+                    onPointerCancel={() => {
+                      setPressedBlackKeyId((currentValue) =>
+                        currentValue === key.label ? null : currentValue
+                      );
+                    }}
+                  />
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  ) : null;
+  const currentSongPanel = (
+    <div className="vote-song-workspace__right">
+      <VoteSongPlayerPanel
+        isVisible={isVisible}
+        song={activeState?.currentSong ?? null}
+        startedAt={activeState?.currentSongStartedAt ?? null}
+        code={activeCode}
+        onVolumeChange={onVolumeChange}
+        selectedTimelineSong={selectedTimelineSong}
+        onCloseSelectedTimelineSong={() => {
+          setSelectedTimelineSongId(null);
+        }}
+        lyrics={activeLyrics}
+        plainLyrics={activePlainLyrics}
+        lyricsStatus={activeLyricsStatus}
+        onPlaybackProgress={({ capturedAtMs, currentMs, isPlaying, songId }) => {
+          livePlaybackRef.current = {
+            capturedAtMs,
+            currentMs,
+            isPlaying,
+            songId,
+          };
+        }}
+        volumeLevel={volumeLevel}
+      />
+    </div>
+  );
   return (
     <div
       className={`vote-song-workspace${
@@ -666,6 +885,12 @@ export function VoteSongWorkspace({
           : hasEndedSession
             ? " vote-song-workspace--ended"
             : " vote-song-workspace--intro"
+      }${hasJoinedRoom && activeState && isCompactVoteLayout ? " vote-song-workspace--compact-live" : ""}${
+        hasJoinedRoom && activeState && isPhoneVoteLayout ? " vote-song-workspace--phone-live" : ""
+      }${
+        isPhoneCurrentSongVisible
+          ? " vote-song-workspace--phone-player-visible"
+          : ""
       }`}
     >
       {hasJoinedRoom && activeState ? (
@@ -825,199 +1050,43 @@ export function VoteSongWorkspace({
             </div>
           </div>
 
-          <div className="vote-song-workspace__left">
-            <div className="vote-song-workspace__section-header">
-              <h3 className="playlist-workspace__songs-title playlist-workspace__songs-title--compact vote-song-workspace__section-title">
-                Voting Options
-              </h3>
-              <div className="vote-song-workspace__header-actions">
-                <button
-                  type="button"
-                  className="playlist-workspace__secondary vote-song-workspace__previous-button"
-                  onClick={() => {
-                    toggleResultsView();
-                  }}
-                >
-                  {isResultsVisible ? "Back To Voting" : "Show Results"}
-                </button>
-                <span className="playlist-workspace__pill vote-song-workspace__header-pill">
-                  One vote only
-                </span>
+          {isPhoneVoteLayout ? (
+            <div className="vote-song-workspace__phone-stage">
+              <div className="vote-song-workspace__phone-track">
+                {voteOptionsPanel}
+                {currentSongPanel}
               </div>
-              <span className="playlist-workspace__songs-count vote-song-workspace__header-caption">
-                Change anytime before the song ends
-              </span>
             </div>
-            <div className="vote-song-workspace__card vote-song-workspace__card--vote">
-              {error ? <p className="playlist-workspace__error">{error}</p> : null}
+          ) : (
+            voteOptionsPanel
+          )}
 
-              {isResultsVisible ? (
-                resultsSnapshot ? (
-                  <VoteSubwooferPanel
-                    currentSongId={activeState.currentSongId}
-                    selectedSongId={selectedSongId}
-                    songList={resultsSnapshot.songList}
-                    songs={resultsSnapshot.batch}
-                    stage={resultsViewStage}
-                    topSongIds={resultsSnapshot.topSongIds}
-                  />
-                ) : (
-                  <div className="vote-song-workspace__ended-copy">
-                    <strong>Results pending</strong>
-                    <span>
-                      The first completed voting batch has not locked in yet.
-                    </span>
-                  </div>
-                )
-              ) : (
-                <div className="vote-song-workspace__piano-shell">
-                  <div className="vote-song-workspace__piano-viewport">
-                    <div className="vote-song-workspace__piano">
-                      {WHITE_PIANO_KEYS.map((keyLabel, index) => {
-                        const song = activeState.currentBatch[index] ?? null;
-                        const isCurrentSong = song
-                          ? activeState.currentSongId === song.id
-                          : false;
-                        const isSelected = song ? selectedSongId === song.id : false;
-                        const isPressing = song ? pressedKeyId === song.id : false;
-                        const canVote = !!song;
-
-                        return (
-                          <button
-                            key={`white-${keyLabel}`}
-                            type="button"
-                            className={`vote-song-workspace__piano-white-key${
-                              isSelected ? " is-selected" : ""
-                            }${isCurrentSong ? " is-current" : ""}${
-                              isPressing ? " is-pressing" : ""
-                            }`}
-                            onPointerDown={() => {
-                              if (song && canVote && voteState === "idle") {
-                                setPressedKeyId(song.id);
-                              }
-                            }}
-                            onPointerUp={() => {
-                              setPressedKeyId((currentValue) =>
-                                currentValue === song?.id ? null : currentValue
-                              );
-                            }}
-                            onPointerLeave={() => {
-                              setPressedKeyId((currentValue) =>
-                                currentValue === song?.id ? null : currentValue
-                              );
-                            }}
-                            onPointerCancel={() => {
-                              setPressedKeyId((currentValue) =>
-                                currentValue === song?.id ? null : currentValue
-                              );
-                            }}
-                            onClick={() => {
-                              if (song && canVote) {
-                                void handleVoteForSong(song.id);
-                              }
-                            }}
-                            disabled={!canVote || voteState !== "idle"}
-                          >
-                            <div className="vote-song-workspace__piano-key-content">
-                              <span className="vote-song-workspace__piano-key-art-shell">
-                                {song?.artworkUrl ? (
-                                  <img
-                                    src={song.artworkUrl}
-                                    alt={song.title}
-                                    className="vote-song-workspace__piano-key-art"
-                                  />
-                                ) : (
-                                  <span
-                                    className="vote-song-workspace__piano-key-art vote-song-workspace__piano-key-art--fallback"
-                                    aria-hidden="true"
-                                  >
-                                    {(song?.title ?? "Empty").charAt(0).toUpperCase()}
-                                  </span>
-                                )}
-                              </span>
-                              <span className="vote-song-workspace__piano-key-copy">
-                                <strong>
-                                  <MarqueeText
-                                    align="center"
-                                    overflowStrategy="length"
-                                    text={song?.title ?? "Empty"}
-                                  />
-                                </strong>
-                              </span>
-                            </div>
-                          </button>
-                        );
-                      })}
-
-                      {BLACK_PIANO_KEYS.map((key) => (
-                        <div
-                          key={`black-${key.label}`}
-                          className={`vote-song-workspace__piano-black-key vote-song-workspace__piano-black-key--after-${key.afterIndex}${
-                            pressedBlackKeyId === key.label ? " is-pressing" : ""
-                          }`}
-                          onPointerDown={() => {
-                            setPressedBlackKeyId(key.label);
-                          }}
-                          onPointerUp={() => {
-                            setPressedBlackKeyId((currentValue) =>
-                              currentValue === key.label ? null : currentValue
-                            );
-                          }}
-                          onPointerLeave={() => {
-                            setPressedBlackKeyId((currentValue) =>
-                              currentValue === key.label ? null : currentValue
-                            );
-                          }}
-                          onPointerCancel={() => {
-                            setPressedBlackKeyId((currentValue) =>
-                              currentValue === key.label ? null : currentValue
-                            );
-                          }}
-                        />
-                      ))}
-                    </div>
-                  </div>
-                </div>
-              )}
+          {!isCompactVoteLayout && !isPhoneVoteLayout ? (
+            <div className="vote-song-workspace__middle">
+              <div className="vote-song-workspace__card vote-song-workspace__card--visualizer">
+                <MusicVisualizerSphere
+                  currentSong={activeState.currentSong}
+                  lyrics={activeLyrics}
+                  playbackSampleRef={livePlaybackRef}
+                  songList={activeState.songList}
+                />
+              </div>
             </div>
-          </div>
+          ) : null}
 
-          <div className="vote-song-workspace__middle">
-            <div className="vote-song-workspace__card vote-song-workspace__card--visualizer">
-              <MusicVisualizerSphere
-                currentSong={activeState.currentSong}
-                lyrics={activeLyrics}
-                playbackSampleRef={livePlaybackRef}
-                songList={activeState.songList}
-              />
-            </div>
-          </div>
+          {!isPhoneVoteLayout ? currentSongPanel : null}
 
-          <div className="vote-song-workspace__right">
-            <VoteSongPlayerPanel
-              isVisible={isVisible}
-              song={activeState.currentSong}
-              startedAt={activeState.currentSongStartedAt}
-              code={activeCode}
-              onVolumeChange={onVolumeChange}
-              selectedTimelineSong={selectedTimelineSong}
-              onCloseSelectedTimelineSong={() => {
-                setSelectedTimelineSongId(null);
+          {isPhoneVoteLayout && !isResultsVisible ? (
+            <button
+              type="button"
+              className="vote-song-workspace__mobile-player-toggle"
+              onClick={() => {
+                setIsMobileCurrentSongVisible((currentValue) => !currentValue);
               }}
-              lyrics={activeLyrics}
-              plainLyrics={activePlainLyrics}
-              lyricsStatus={activeLyricsStatus}
-              onPlaybackProgress={({ capturedAtMs, currentMs, isPlaying, songId }) => {
-                livePlaybackRef.current = {
-                  capturedAtMs,
-                  currentMs,
-                  isPlaying,
-                  songId,
-                };
-              }}
-              volumeLevel={volumeLevel}
-            />
-          </div>
+            >
+              {isPhoneCurrentSongVisible ? "← Go Back" : "Show Current Song →"}
+            </button>
+          ) : null}
         </>
       ) : null}
     </div>

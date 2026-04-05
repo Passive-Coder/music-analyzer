@@ -109,7 +109,7 @@ export function MusicVisualizerSphere({
     const wireframeSphere = new THREE.Mesh(wireframeGeometry, wireframeMaterial);
     sphereRig.add(wireframeSphere);
 
-    const auraGeometry = new THREE.IcosahedronGeometry(3.52, 2);
+    const auraGeometry = new THREE.IcosahedronGeometry(3.2, 2);
     const auraMaterial = new THREE.MeshBasicMaterial({
       blending: THREE.AdditiveBlending,
       color: AURA_COLOR.clone(),
@@ -137,10 +137,18 @@ export function MusicVisualizerSphere({
     });
     const stars = new THREE.Points(starGeometry, starMaterial);
     scene.add(stars);
+    let sizeDecider = 1;
 
     const resize = () => {
       const width = container.clientWidth || 1;
       const height = container.clientHeight || 1;
+      const viewportWidth = window.innerWidth || width;
+      const normalizedScale = (viewportWidth - 1210) / 290;
+
+      sizeDecider =
+        viewportWidth <= 1210 && viewportWidth > 1000
+          ? 0.4
+          : THREE.MathUtils.clamp(0.65 + normalizedScale * 0.35, 0.65, 1);
       camera.aspect = width / height;
       camera.updateProjectionMatrix();
       renderer.setSize(width, height, false);
@@ -182,7 +190,7 @@ export function MusicVisualizerSphere({
       sphereRig.rotation.y += 0.002 + pulse * 0.0045;
       sphereRig.rotation.x = Math.sin(elapsed * 0.32) * 0.08;
       sphereRig.rotation.z = Math.cos(elapsed * 0.27) * 0.05;
-      sphereRig.scale.setScalar(scale);
+      sphereRig.scale.setScalar(scale * sizeDecider);
       sphereRig.position.y = Math.sin(elapsed * 0.68) * 0.16 - pulse * 0.08;
 
       wireframeSphere.rotation.y -= 0.0016 + pulse * 0.0021;
