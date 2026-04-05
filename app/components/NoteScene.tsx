@@ -9,6 +9,9 @@ const LIGHT_MOTION_MULTIPLIER = 1.5;
 const IDLE_TILT_LIMIT = THREE.MathUtils.degToRad(5);
 const BASE_NOTE_TILT = -Math.PI / 12;
 const LOGO_MODE_SCALE = 0.28;
+const LOGO_MODE_MIN_SCALE = 0.23;
+const HOME_NOTE_MIN_SCALE = 0.62;
+const HOME_NOTE_RESPONSIVE_WIDTH = 1440;
 const LOGO_TRANSITION_DURATION = 1.25;
 const FULL_ROTATION = Math.PI * 2;
 const NOTE_DOCK_MARGIN_X_PX = 9;
@@ -173,8 +176,8 @@ export function NoteScene({
       const note = createNote(noteMaterial);
       const noteBounds = new THREE.Box3().setFromObject(note);
       const noteSize = noteBounds.getSize(new THREE.Vector3());
-      const noteHalfWidth = noteSize.x * 0.5 * LOGO_MODE_SCALE;
-      const noteHalfHeight = noteSize.y * 0.5 * LOGO_MODE_SCALE;
+      const noteHalfWidthBase = noteSize.x * 0.5;
+      const noteHalfHeightBase = noteSize.y * 0.5;
       note.rotation.z = BASE_NOTE_TILT;
       noteRig.add(note);
 
@@ -219,6 +222,8 @@ export function NoteScene({
       let pendingCompletionTarget: NoteDock | null = null;
       let lastPublishEffectToken = publishEffectTokenRef.current;
       let publishEffectElapsed = Number.POSITIVE_INFINITY;
+      let homeScale = 1;
+      let logoScale = LOGO_MODE_SCALE;
       const rainbowColor = new THREE.Color();
       const rainbowGlowColor = new THREE.Color();
 
@@ -279,6 +284,16 @@ export function NoteScene({
       const resize = () => {
         const width = container.clientWidth || window.innerWidth;
         const height = container.clientHeight || window.innerHeight;
+        homeScale = THREE.MathUtils.clamp(
+          width / HOME_NOTE_RESPONSIVE_WIDTH,
+          HOME_NOTE_MIN_SCALE,
+          1
+        );
+        logoScale = THREE.MathUtils.clamp(
+          LOGO_MODE_SCALE * (width / HOME_NOTE_RESPONSIVE_WIDTH),
+          LOGO_MODE_MIN_SCALE,
+          LOGO_MODE_SCALE
+        );
         camera.aspect = width / height;
         camera.updateProjectionMatrix();
         camera.updateMatrixWorld();
@@ -301,13 +316,13 @@ export function NoteScene({
         );
 
         topRightTargetPosition.set(
-          topRightEdgePosition.x - noteHalfWidth,
-          topRightEdgePosition.y - noteHalfHeight,
+          topRightEdgePosition.x - noteHalfWidthBase * logoScale,
+          topRightEdgePosition.y - noteHalfHeightBase * logoScale,
           0
         );
         topLeftTargetPosition.set(
-          topLeftEdgePosition.x + noteHalfWidth,
-          topLeftEdgePosition.y - noteHalfHeight,
+          topLeftEdgePosition.x + noteHalfWidthBase * logoScale,
+          topLeftEdgePosition.y - noteHalfHeightBase * logoScale,
           0
         );
       };
@@ -446,7 +461,7 @@ export function NoteScene({
             : topRightTargetPosition;
         noteRig.position.lerpVectors(restPosition, targetPosition, easedLogoProgress);
         noteRig.scale.setScalar(
-          THREE.MathUtils.lerp(1, LOGO_MODE_SCALE, easedLogoProgress)
+          THREE.MathUtils.lerp(homeScale, logoScale, easedLogoProgress)
         );
 
         noteRig.updateWorldMatrix(true, true);

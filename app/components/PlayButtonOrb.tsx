@@ -74,7 +74,43 @@ export function PlayButtonOrb({
   onClick,
 }: PlayButtonOrbProps) {
   const pathRefs = useRef<Array<SVGPathElement | null>>([]);
-  const [isActive, setIsActive] = useState(false);
+  const touchHoldTimeoutRef = useRef<number | null>(null);
+  const [interactionState, setInteractionState] = useState({
+    isFocused: false,
+    isHovered: false,
+    isTouchActive: false,
+  });
+
+  useEffect(() => {
+    return () => {
+      if (touchHoldTimeoutRef.current !== null) {
+        window.clearTimeout(touchHoldTimeoutRef.current);
+      }
+    };
+  }, []);
+
+  const setTouchActive = (isTouchActive: boolean) => {
+    if (touchHoldTimeoutRef.current !== null) {
+      window.clearTimeout(touchHoldTimeoutRef.current);
+      touchHoldTimeoutRef.current = null;
+    }
+
+    setInteractionState((currentValue) =>
+      currentValue.isTouchActive === isTouchActive
+        ? currentValue
+        : {
+            ...currentValue,
+            isTouchActive,
+          }
+    );
+  };
+
+  const isActive =
+    !isDisabled &&
+    isVisible &&
+    (interactionState.isHovered ||
+      interactionState.isFocused ||
+      interactionState.isTouchActive);
 
   useEffect(() => {
     let frameId = 0;
@@ -106,7 +142,7 @@ export function PlayButtonOrb({
     >
       <div
         className="play-orb-shell"
-        data-active={isActive && !isDisabled ? "true" : "false"}
+        data-active={isActive ? "true" : "false"}
       >
         <svg
           className="play-orb-waves"
@@ -134,21 +170,58 @@ export function PlayButtonOrb({
           aria-pressed={isActivated}
           disabled={isDisabled}
           onClick={() => {
-            setIsActive(false);
             onClick?.();
           }}
-          onPointerEnter={() => {
-            if (!isDisabled && isVisible) {
-              setIsActive(true);
+          onPointerEnter={(event) => {
+            if (!isDisabled && isVisible && event.pointerType !== "touch") {
+              setInteractionState((currentValue) => ({
+                ...currentValue,
+                isHovered: true,
+              }));
             }
           }}
-          onPointerLeave={() => setIsActive(false)}
+          onPointerLeave={(event) => {
+            if (event.pointerType !== "touch") {
+              setInteractionState((currentValue) => ({
+                ...currentValue,
+                isHovered: false,
+              }));
+            }
+          }}
+          onPointerDown={(event) => {
+            if (event.pointerType === "touch" || event.pointerType === "pen") {
+              setTouchActive(true);
+            }
+          }}
+          onPointerUp={(event) => {
+            if (event.pointerType === "touch" || event.pointerType === "pen") {
+              if (touchHoldTimeoutRef.current !== null) {
+                window.clearTimeout(touchHoldTimeoutRef.current);
+              }
+
+              touchHoldTimeoutRef.current = window.setTimeout(() => {
+                touchHoldTimeoutRef.current = null;
+                setTouchActive(false);
+              }, 180);
+            }
+          }}
+          onPointerCancel={() => {
+            setTouchActive(false);
+          }}
           onFocus={() => {
             if (!isDisabled && isVisible) {
-              setIsActive(true);
+              setInteractionState((currentValue) => ({
+                ...currentValue,
+                isFocused: true,
+              }));
             }
           }}
-          onBlur={() => setIsActive(false)}
+          onBlur={() => {
+            setInteractionState((currentValue) => ({
+              ...currentValue,
+              isFocused: false,
+            }));
+          }}
         >
           <span
             className={`play-orb-icon${
