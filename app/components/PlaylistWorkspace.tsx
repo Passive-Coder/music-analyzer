@@ -186,6 +186,7 @@ export function PlaylistWorkspace({
   const [playbackSong, setPlaybackSong] = useState<PlaylistSong | null>(null);
   const [playbackStartSeconds, setPlaybackStartSeconds] = useState(0);
   const [playbackToken, setPlaybackToken] = useState(0);
+  const [publishedSongProgressMs, setPublishedSongProgressMs] = useState(0);
   const convexClient = useMemo(() => getConvexBrowserClient(), []);
 
   const isVoteMode = mode === "vote";
@@ -229,6 +230,18 @@ export function PlaylistWorkspace({
     isVisible && !isVoteMode
       ? getSongEmbedUrl(playbackSong, playbackToken, playbackStartSeconds)
       : null;
+  const publishedSongDurationMs = Math.max(publishedCurrentSong?.durationMs ?? 0, 0);
+  const normalizedPublishedSongProgressMs = Math.min(
+    publishedSongProgressMs,
+    publishedSongDurationMs
+  );
+  const publishedSongProgressPercent =
+    publishedSongDurationMs > 0
+      ? Math.min(
+          (normalizedPublishedSongProgressMs / publishedSongDurationMs) * 100,
+          100
+        )
+      : 0;
   const busy = requestState !== "idle" || mutationState !== "idle";
   useEffect(() => {
     setHasMounted(true);
@@ -575,6 +588,42 @@ export function PlaylistWorkspace({
     publishedCurrentSongStartedAt,
   ]);
 
+  useEffect(() => {
+    if (
+      isVoteMode ||
+      !isVisible ||
+      !publishedCurrentSong ||
+      !publishedCurrentSongStartedAt
+    ) {
+      setPublishedSongProgressMs(0);
+      return;
+    }
+
+    const startedAtMs = Date.parse(publishedCurrentSongStartedAt);
+
+    const updateProgress = () => {
+      const elapsedMs = Number.isFinite(startedAtMs)
+        ? Math.max(Date.now() - startedAtMs, 0)
+        : 0;
+
+      setPublishedSongProgressMs(
+        Math.min(elapsedMs, Math.max(publishedCurrentSong.durationMs, 0))
+      );
+    };
+
+    updateProgress();
+    const intervalId = window.setInterval(updateProgress, 250);
+
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, [
+    isVisible,
+    isVoteMode,
+    publishedCurrentSong,
+    publishedCurrentSongStartedAt,
+  ]);
+
   const handleLoadPlaylist = async () => {
     setRequestState("loading");
     setError(null);
@@ -799,7 +848,7 @@ export function PlaylistWorkspace({
     setCurrentBatchIndex(0);
     setActiveBatchIndex(0);
     setSongsPlayedBefore([]);
-    setBatchSongs([...songs]);
+    setBatchSongs(buildBatchSongsWithPadding(songs, BATCH_SIZE));
   };
 
   const handleRemoveLoadedPlaylist = (playlistId: string) => {
@@ -1048,7 +1097,6 @@ export function PlaylistWorkspace({
     >
       {isVoteMode ? (
         <VoteSongWorkspace
-          defaultCode={publishedCode}
           isVisible={isVisible}
           onVolumeChange={onVoteVolumeChange}
           volumeLevel={voteVolumeLevel}
@@ -1150,6 +1198,27 @@ export function PlaylistWorkspace({
                     }
                   />
                 </p>
+                <div className="playlist-workspace__live-progress-block">
+                  <div
+                    className="playlist-workspace__live-progress-bar"
+                    role="progressbar"
+                    aria-label="Current song progress"
+                    aria-valuemin={0}
+                    aria-valuemax={publishedSongDurationMs}
+                    aria-valuenow={normalizedPublishedSongProgressMs}
+                  >
+                    <span
+                      className="playlist-workspace__live-progress-fill"
+                      style={{
+                        width: `${publishedSongProgressPercent}%`,
+                      }}
+                    />
+                  </div>
+                  <div className="playlist-workspace__live-progress-times">
+                    <span>{formatDuration(normalizedPublishedSongProgressMs)}</span>
+                    <span>{formatDuration(publishedSongDurationMs)}</span>
+                  </div>
+                </div>
               </div>
               <div className="playlist-workspace__live-stats">
                 <span className="playlist-workspace__pill">
@@ -1889,6 +1958,55 @@ function chunkSongEntries(entries: SongEntry[], chunkSize: number) {
   }
 
   return batches;
+}
+
+function buildBatchSongsWithPadding(songs: PlaylistSong[], batchSize: number) {
+  if (!songs.length || batchSize <= 0) {
+    return songs;
+  }
+
+  const remainder = songs.length % batchSize;
+
+  if (remainder === 0) {
+    return songs;
+  }
+
+  const missingCount = batchSize - remainder;
+  const incompleteBatch = songs.slice(-remainder);
+  const incompleteBatchIds = new Set(incompleteBatch.map((song) => song.id));
+  const preferredPool = songs.filter((song) => !incompleteBatchIds.has(song.id));
+  const uniquePool = preferredPool.length ? preferredPool : songs;
+  const repeatedPool = songs;
+  const shuffledUniquePool = [...uniquePool];
+
+  for (let index = shuffledUniquePool.length - 1; index > 0; index -= 1) {
+    const swapIndex = Math.floor(Math.random() * (index + 1));
+    [shuffledUniquePool[index], shuffledUniquePool[swapIndex]] = [
+      shuffledUniquePool[swapIndex],
+      shuffledUniquePool[index],
+    ];
+  }
+
+  const selectedSources = shuffledUniquePool.slice(
+    0,
+    Math.min(missingCount, shuffledUniquePool.length)
+  );
+
+  while (selectedSources.length < missingCount) {
+    const randomSource =
+      repeatedPool[Math.floor(Math.random() * repeatedPool.length)] ??
+      songs[selectedSources.length % songs.length];
+
+    selectedSources.push(randomSource);
+  }
+
+  const fillToken = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const fillerSongs = selectedSources.map((song, fillerIndex) => ({
+    ...song,
+    id: `${song.id}__batch-fill-${fillToken}-${fillerIndex + 1}`,
+  }));
+
+  return [...songs, ...fillerSongs];
 }
 
 function flattenSongBatches(batches: PlaylistSong[][]) {

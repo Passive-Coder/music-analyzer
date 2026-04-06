@@ -25,11 +25,14 @@ export function SubwooferScene({ stage }: SubwooferSceneProps) {
       return undefined;
     }
 
+    const prefersMobileRenderer = window.innerWidth <= 620;
     const renderer = new THREE.WebGLRenderer({
       alpha: true,
-      antialias: true,
+      antialias: !prefersMobileRenderer,
     });
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.setPixelRatio(
+      Math.min(window.devicePixelRatio, prefersMobileRenderer ? 1.25 : 1.75)
+    );
     renderer.outputColorSpace = THREE.SRGBColorSpace;
     renderer.setClearColor(0x000000, 0);
     renderer.domElement.className = "vote-song-workspace__subwoofer-scene-canvas";
