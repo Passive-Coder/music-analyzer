@@ -67,10 +67,12 @@ export function MusicVisualizerSphere({
 
     const renderer = new THREE.WebGLRenderer({
       alpha: true,
-      antialias: true,
+      antialias: window.innerWidth > 720,
       powerPreference: "high-performance",
     });
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.setPixelRatio(
+      Math.min(window.devicePixelRatio, window.innerWidth <= 1200 ? 1.5 : 2)
+    );
     renderer.outputColorSpace = THREE.SRGBColorSpace;
     renderer.setClearColor(0x000000, 0);
     renderer.domElement.className = "vote-song-visualizer__canvas";

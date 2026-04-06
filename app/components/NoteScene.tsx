@@ -119,8 +119,14 @@ export function NoteScene({
     container.dataset.sceneStatus = "initializing";
 
     try {
-      const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
-      renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+      const prefersMobileRenderer = window.innerWidth <= 620;
+      const renderer = new THREE.WebGLRenderer({
+        antialias: !prefersMobileRenderer,
+        alpha: true,
+      });
+      renderer.setPixelRatio(
+        Math.min(window.devicePixelRatio, prefersMobileRenderer ? 1.25 : 1.8)
+      );
       renderer.outputColorSpace = THREE.SRGBColorSpace;
       renderer.toneMapping = THREE.ACESFilmicToneMapping;
       renderer.toneMappingExposure = 0.88;

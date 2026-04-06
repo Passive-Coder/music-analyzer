@@ -51,8 +51,12 @@ export function VoteSongBeatParticles({
     const context = canvas.getContext("2d");
     if (!context) return;
 
+    const viewportWidth = window.innerWidth || 0;
+    const isSmallScreen = viewportWidth <= 620;
+    const particleCount = isSmallScreen ? Math.round(PARTICLE_COUNT * 0.28) : PARTICLE_COUNT;
+
     // Create a high-density particle system covering the full viewport
-    const particles: Particle[] = Array.from({ length: PARTICLE_COUNT }, () => ({
+    const particles: Particle[] = Array.from({ length: particleCount }, () => ({
       alphaSeed: Math.random() * Math.PI * 2,
       angle: Math.random() * Math.PI * 2,
       drift: 0.12 + Math.random() * 0.38,
@@ -68,11 +72,12 @@ export function VoteSongBeatParticles({
     const resize = () => {
       const width = window.innerWidth;
       const height = window.innerHeight;
-      canvas.width = Math.max(1, Math.floor(width * window.devicePixelRatio));
-      canvas.height = Math.max(1, Math.floor(height * window.devicePixelRatio));
+      const pixelRatio = Math.min(window.devicePixelRatio, isSmallScreen ? 1.1 : 1.6);
+      canvas.width = Math.max(1, Math.floor(width * pixelRatio));
+      canvas.height = Math.max(1, Math.floor(height * pixelRatio));
       canvas.style.width = `${width}px`;
       canvas.style.height = `${height}px`;
-      context.setTransform(window.devicePixelRatio, 0, 0, window.devicePixelRatio, 0, 0);
+      context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
     };
 
     resize();

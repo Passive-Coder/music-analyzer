@@ -1,6 +1,7 @@
 /* eslint-disable @next/next/no-img-element */
 "use client";
 
+import dynamic from "next/dynamic";
 import {
   startTransition,
   useCallback,
@@ -17,9 +18,6 @@ import {
   syncActivePlaylistPlaybackAction,
   voteForActivePlaylistSongAction,
 } from "@/app/actions/activePlaylist";
-import { MusicVisualizerSphere } from "@/app/components/MusicVisualizerSphere";
-import { SubwooferScene } from "@/app/components/SubwooferScene";
-import { VoteSongBeatParticles } from "@/app/components/VoteSongBeatParticles";
 import { VoteSongLyricsPanel } from "@/app/components/VoteSongLyricsPanel";
 import type { TrackLyrics } from "@/lib/lyrics";
 import {
@@ -35,8 +33,31 @@ import type {
 import { getConvexBrowserClient } from "@/lib/convex-browser-client";
 import { api } from "@/convex/_generated/api";
 
+const MusicVisualizerSphere = dynamic(
+  () =>
+    import("@/app/components/MusicVisualizerSphere").then(
+      (module) => module.MusicVisualizerSphere
+    ),
+  { ssr: false }
+);
+
+const SubwooferScene = dynamic(
+  () =>
+    import("@/app/components/SubwooferScene").then(
+      (module) => module.SubwooferScene
+    ),
+  { ssr: false }
+);
+
+const VoteSongBeatParticles = dynamic(
+  () =>
+    import("@/app/components/VoteSongBeatParticles").then(
+      (module) => module.VoteSongBeatParticles
+    ),
+  { ssr: false }
+);
+
 type VoteSongWorkspaceProps = {
-  defaultCode?: string | null;
   isVisible?: boolean;
   onVolumeChange?: (volume: number) => void;
   volumeLevel?: number;
@@ -63,7 +84,6 @@ type PreviousResultSnapshot = {
 };
 
 export function VoteSongWorkspace({
-  defaultCode = null,
   isVisible = false,
   onVolumeChange,
   volumeLevel = 72,
@@ -74,7 +94,7 @@ export function VoteSongWorkspace({
   const convexClient = useMemo(() => getConvexBrowserClient(), []);
   const [joinState, setJoinState] = useState<JoinState>("idle");
   const [voteState, setVoteState] = useState<VoteMutationState>("idle");
-  const [playlistCodeInput, setPlaylistCodeInput] = useState(defaultCode ?? "");
+  const [playlistCodeInput, setPlaylistCodeInput] = useState("");
   const [activeCode, setActiveCode] = useState<string | null>(null);
   const [activeState, setActiveState] = useState<ActivePlaylistState | null>(null);
   const [selectedSongId, setSelectedSongId] = useState<string | null>(null);
@@ -192,6 +212,31 @@ export function VoteSongWorkspace({
     },
     [activeCode, activeState]
   );
+  const handleLeaveSession = useCallback(() => {
+    previousActiveBatchRef.current = null;
+    lastSelectionKeyRef.current = null;
+    livePlaybackRef.current = createPlaybackClockSample(null, null);
+    setPlaylistCodeInput("");
+    setActiveCode(null);
+    setActiveState(null);
+    setSelectedSongId(null);
+    setSelectedTimelineSongId(null);
+    setPressedKeyId(null);
+    setPressedBlackKeyId(null);
+    setPreviousResult(null);
+    setError(null);
+    setResultsViewStage("hidden");
+    setIsMobileCurrentSongVisible(false);
+    startTransition(() => {
+      setLocalPreviousResults(null);
+      setLyricsData({
+        plainLyrics: null,
+        songId: null,
+        status: "idle",
+        track: null,
+      });
+    });
+  }, [activeCode]);
 
   useEffect(() => {
     return () => {
@@ -589,26 +634,6 @@ export function VoteSongWorkspace({
     [handleSessionEnded, viewerId]
   );
 
-  useEffect(() => {
-    const normalizedCode = normalizeCode(defaultCode ?? "");
-
-    if (!normalizedCode) {
-      return;
-    }
-
-    if (!viewerId || (activeCode === normalizedCode && activeState)) {
-      return;
-    }
-
-    const timeoutId = window.setTimeout(() => {
-      void joinPlaylistByCode(normalizedCode);
-    }, 0);
-
-    return () => {
-      window.clearTimeout(timeoutId);
-    };
-  }, [activeCode, activeState, defaultCode, joinPlaylistByCode, viewerId]);
-
   const handleJoinPlaylist = async () => {
     const normalizedCode = normalizeCode(playlistCodeInput);
 
@@ -708,9 +733,13 @@ export function VoteSongWorkspace({
           >
             {isResultsVisible ? "Back To Voting" : "Show Results"}
           </button>
-          <span className="playlist-workspace__pill vote-song-workspace__header-pill">
-            One vote only
-          </span>
+          <button
+            type="button"
+            className="playlist-workspace__secondary vote-song-workspace__leave-button"
+            onClick={handleLeaveSession}
+          >
+            Leave Session
+          </button>
         </div>
         <span className="playlist-workspace__songs-count vote-song-workspace__header-caption">
           Change anytime before the song ends
@@ -858,7 +887,7 @@ export function VoteSongWorkspace({
         startedAt={activeState?.currentSongStartedAt ?? null}
         code={activeCode}
         onVolumeChange={onVolumeChange}
-        selectedTimelineSong={selectedTimelineSong}
+        selectedTimelineSong={isPhoneVoteLayout ? null : selectedTimelineSong}
         onCloseSelectedTimelineSong={() => {
           setSelectedTimelineSongId(null);
         }}
@@ -1086,6 +1115,16 @@ export function VoteSongWorkspace({
             >
               {isPhoneCurrentSongVisible ? "← Go Back" : "Show Current Song →"}
             </button>
+          ) : null}
+
+          {isPhoneVoteLayout && selectedTimelineSong ? (
+            <TimelineRecorder
+              song={selectedTimelineSong}
+              onClose={() => {
+                setSelectedTimelineSongId(null);
+              }}
+              variant="mobile-bottom"
+            />
           ) : null}
         </>
       ) : null}
@@ -1387,7 +1426,7 @@ function TimelineNode({
             </span>
           )}
         </span>
-        <span className="vote-song-workspace__timeline-label" title={song.title}>
+        <span className="vote-song-workspace__timeline-label">
           {song.title}
         </span>
       </button>
@@ -1401,7 +1440,7 @@ function TimelineRecorder({
   onClose,
   song,
 }: {
-  variant?: "timeline" | "player-side";
+  variant?: "timeline" | "player-side" | "mobile-bottom";
   onClose: () => void;
   song: PlaylistSong;
 }) {
@@ -1439,7 +1478,13 @@ function TimelineRecorder({
           )}
           <div className="vote-song-workspace__timeline-recorder-copy">
             <span>Selected Song</span>
-            <strong>{song.title}</strong>
+            <strong className="vote-song-workspace__timeline-recorder-title">
+              <MarqueeText
+                durationScale={0.86}
+                gap="0.7rem"
+                text={song.title}
+              />
+            </strong>
           </div>
         </div>
         <div className="vote-song-workspace__timeline-recorder-reels" aria-hidden="true">

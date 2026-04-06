@@ -4,8 +4,12 @@ import { useEffect, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import { HomeActionChooser } from "@/app/components/HomeActionChooser";
 import { PageBackground } from "@/app/components/PageBackground";
-import { NoteScene } from "@/app/components/NoteScene";
 import { PlayButtonOrb } from "@/app/components/PlayButtonOrb";
+
+const NoteScene = dynamic(
+  () => import("@/app/components/NoteScene").then((module) => module.NoteScene),
+  { ssr: false }
+);
 
 const PlaylistWorkspace = dynamic(
   () =>
